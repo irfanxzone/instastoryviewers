@@ -289,7 +289,7 @@ async function fetchAllPublic(username) {
       }
     }
 
-    partial.backgroundLoading = true;
+    partial.backgroundLoading = process.env.ENABLE_BROWSER_FALLBACK === 'true';
     return partial;
   }
 
