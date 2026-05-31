@@ -138,16 +138,18 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
-const { warmupBrowser } = require('./services/browserFallbackService');
+// ─── Start (local only — Vercel imports the app as a module, never calls listen) ─
+module.exports = app;
 
-app.listen(port, () => {
-  console.log(`[server] Instagram Viewer running at http://localhost:${port}`);
-  console.log(`[server] NODE_ENV=${process.env.NODE_ENV || 'development'}`);
-  console.log(`[server] Browser fallback: ${process.env.ENABLE_BROWSER_FALLBACK === 'true' ? 'enabled' : 'disabled'}`);
+if (require.main === module) {
+  const { warmupBrowser } = require('./services/browserFallbackService');
+  app.listen(port, () => {
+    console.log(`[server] Instagram Viewer running at http://localhost:${port}`);
+    console.log(`[server] NODE_ENV=${process.env.NODE_ENV || 'development'}`);
+    console.log(`[server] Browser fallback: ${process.env.ENABLE_BROWSER_FALLBACK === 'true' ? 'enabled' : 'disabled'}`);
 
-  // Pre-warm Chrome 2s after startup so it's ready before the first search
-  if (process.env.ENABLE_BROWSER_FALLBACK === 'true') {
-    setTimeout(() => warmupBrowser().catch(() => {}), 2000);
-  }
-});
+    if (process.env.ENABLE_BROWSER_FALLBACK === 'true') {
+      setTimeout(() => warmupBrowser().catch(() => {}), 2000);
+    }
+  });
+}

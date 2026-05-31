@@ -8,10 +8,14 @@ const { LRUCache } = require('lru-cache');
 const freshTtlMs = Number(process.env.CACHE_TTL_SECONDS || 900) * 1000;
 const staleTtlMs = Number(process.env.STALE_CACHE_TTL_SECONDS || 86400) * 1000;
 
-const cacheFile = path.resolve(
-  process.cwd(),
-  process.env.CACHE_FILE || 'src/storage/cache.json'
-);
+// Vercel's filesystem is read-only — /tmp is the only writable directory
+const defaultCachePath = process.env.VERCEL
+  ? '/tmp/cache.json'
+  : path.join(process.cwd(), 'src/storage/cache.json');
+
+const cacheFile = process.env.CACHE_FILE
+  ? path.resolve(process.cwd(), process.env.CACHE_FILE)
+  : defaultCachePath;
 
 // LRU keeps at most 5 000 entries in memory; they survive up to stale TTL
 const memory = new LRUCache({ max: 5000, ttl: staleTtlMs });
