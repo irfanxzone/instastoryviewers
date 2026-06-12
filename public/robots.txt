@@ -17,4 +17,4 @@ Allow: /disclaimer
 Allow: /terms
 Allow: /dmca
 
-Sitemap: https://www.instastoryviewers.de/sitemap.xml
+Sitemap: https://instastoryviewers.de/sitemap.xml
