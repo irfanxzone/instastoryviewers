@@ -33,9 +33,20 @@ function scheduleBrowserFetch(username, cacheKey) {
   const key = username.toLowerCase();
   if (activeBrowserJobs.has(key)) return; // already running
 
-  const job = fetchViaBrowserFallback(username, cacheKey)  // pass cacheKey for progressive cache writes
-    .then(result => {
+  const job = fetchViaBrowserFallback(username, cacheKey)
+    .then(async result => {
       if (result?.success && (result.posts?.items?.length > 0 || result.status === 'PRIVATE_ACCOUNT')) {
+        // Fetch stories via proxy now that we have the real profile ID from browser
+        if (result.profile?.id && process.env.INSTAGRAM_SESSION_ID) {
+          try {
+            const { normalizeStoryItems } = require('./instagramNormalizer');
+            const storyItems = await fetchStoriesServerSide(result.profile.id, username, null);
+            if (storyItems.length) {
+              result.stories = { available: true, items: normalizeStoryItems(storyItems), message: undefined };
+              console.log(`[bg] Stories fetched for @${username}: ${storyItems.length} items`);
+            }
+          } catch {}
+        }
         setCache(cacheKey, result);
         console.log(`[bg] Browser fetch done @${username}: ${result.posts?.items?.length || 0} posts`);
       }
