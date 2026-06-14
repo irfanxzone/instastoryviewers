@@ -30,22 +30,20 @@ const PROFILE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 const activeBrowserJobs = new Map(); // username → Promise
 
 function scheduleBrowserFetch(username, cacheKey) {
-  if (activeBrowserJobs.has(username)) return; // already running
+  const key = username.toLowerCase();
+  if (activeBrowserJobs.has(key)) return; // already running
 
-  // Pass cacheKey so the browser service can write progressive batches to cache
-  const job = fetchViaBrowserFallback(username, cacheKey)
+  const job = fetchViaBrowserFallback(username, cacheKey)  // pass cacheKey for progressive cache writes
     .then(result => {
-      // igBatch callbacks have already been updating the cache progressively.
-      // Write the final result to ensure the cache is fully up-to-date.
-      if (result?.success) {
+      if (result?.success && (result.posts?.items?.length > 0 || result.status === 'PRIVATE_ACCOUNT')) {
         setCache(cacheKey, result);
-        console.log(`[bg] Done @${username}: ${result.posts?.items?.length || 0} posts, ${result.reels?.items?.length || 0} reels`);
+        console.log(`[bg] Browser fetch done @${username}: ${result.posts?.items?.length || 0} posts`);
       }
     })
     .catch(err => console.warn(`[bg] Browser fetch failed @${username}: ${err?.message}`))
-    .finally(() => activeBrowserJobs.delete(username));
+    .finally(() => activeBrowserJobs.delete(key));
 
-  activeBrowserJobs.set(username, job);
+  activeBrowserJobs.set(key, job);
 }
 
 function hasPendingBrowserJob(username) {
@@ -74,17 +72,6 @@ function extractCsrfToken(c, h) {
     (h || '').match(/["']csrf_token["']\s*[:=]\s*["']([^"']{8,})/i)?.[1] || '';
 }
 function buildApiHeaders(username, s) {
-  // Merge page-session cookies with optional INSTAGRAM_SESSION_ID from .env
-  // Must decode URL-encoded value (e.g. %3A → :) before sending in Cookie header
-  const rawSession = process.env.INSTAGRAM_SESSION_ID || '';
-  const sessionId  = rawSession ? (()=>{ try { return decodeURIComponent(rawSession); } catch { return rawSession; } })() : '';
-  const dsUserId   = process.env.INSTAGRAM_DS_USER_ID || '';
-  let cookieParts  = [];
-  if (sessionId) cookieParts.push(`sessionid=${sessionId}`);
-  if (dsUserId)  cookieParts.push(`ds_user_id=${dsUserId}`);
-  if (s?.cookie) cookieParts.push(s.cookie);
-  const cookie = cookieParts.join('; ') || undefined;
-
   return {
     'User-Agent': PROFILE_UA, 'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'en-US,en;q=0.9', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache',
@@ -92,7 +79,7 @@ function buildApiHeaders(username, s) {
     'X-ASBD-ID': '129477', 'X-Requested-With': 'XMLHttpRequest', 'X-Instagram-AJAX': '1',
     'X-IG-WWW-Claim': '0', 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty',
     ...(s?.csrfToken ? { 'X-CSRFToken': s.csrfToken } : {}),
-    ...(cookie ? { 'Cookie': cookie } : {})
+    ...(s?.cookie ? { 'Cookie': s.cookie } : {})
   };
 }
 
@@ -105,11 +92,11 @@ async function fetchBaseCookies() {
 }
 
 async function fetchProfileSession(username) {
-  // Skip homepage pre-fetch (saves 1-2s) — go directly to profile page
+  const baseCookies = await fetchBaseCookies();
   const url = `https://www.instagram.com/${encodeURIComponent(username)}/`;
   let res;
   try {
-    res = await get(url, { 'User-Agent': PROFILE_UA, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Referer': 'https://www.instagram.com/', 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'navigate', 'Upgrade-Insecure-Requests': '1' });
+    res = await get(url, { 'User-Agent': PROFILE_UA, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Referer': 'https://www.instagram.com/', 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'navigate', 'Upgrade-Insecure-Requests': '1', ...(baseCookies ? { 'Cookie': baseCookies } : {}) });
   } catch (err) {
     if (proxyService.shouldRotateOnError(err)) proxyService.rotateProxy();
     throw new Error(`Network error: ${err.message}`);
@@ -117,40 +104,10 @@ async function fetchProfileSession(username) {
   if (res.status === 404) throw new NotFoundError('Profile not found. Check the username and try again.');
   const html = String(res.data || '');
   if (html.includes('"loginErrorCode":"not_found"') || (html.includes('<title>Page Not Found') && !html.includes(username))) throw new NotFoundError('Profile not found.');
-  const cookie = parseSetCookies(res.headers?.['set-cookie']);
+  const cookie = mergeCookies(baseCookies, parseSetCookies(res.headers?.['set-cookie']));
   const csrfToken = extractCsrfToken(cookie, html);
-  console.log(`[fetcher] Profile @${username}: ${res.status}, csrf=${csrfToken ? 'yes' : 'no'}`);
+  console.log(`[fetcher] Session @${username}: ${res.status}, csrf=${csrfToken ? 'yes' : 'no'}, cookies=${cookie.split(';').length}`);
   return { html, cookie, csrfToken, status: res.status };
-}
-
-// ─── Server-side story fetch (uses sessionid from .env) ───────────────────────
-async function fetchStoriesServerSide(userId, username, session) {
-  const sessionId = process.env.INSTAGRAM_SESSION_ID;
-  if (!sessionId || !userId) return [];
-  try {
-    const endpoints = [
-      `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`,
-      `https://www.instagram.com/api/v1/feed/user_story/?user_id=${userId}`,
-      `https://www.instagram.com/api/v1/user/${userId}/story/`
-    ];
-    for (const url of endpoints) {
-      const res = await get(url, buildApiHeaders(username, session));
-      if (res.status >= 400) continue;
-      const data = typeof res.data === 'object' ? res.data : tryJsonParse(res.data);
-      if (!data) continue;
-      const items =
-        data.reels_media?.[0]?.items ||
-        data.reels?.[String(userId)]?.items ||
-        data.story?.items ||
-        data.items ||
-        [];
-      if (items.length) {
-        console.log(`[fetcher] Stories via server-side HTTP: ${items.length} items for @${username}`);
-        return items;
-      }
-    }
-  } catch {}
-  return [];
 }
 
 // ─── API endpoint attempts ────────────────────────────────────────────────────
@@ -258,38 +215,27 @@ async function fetchAllPublic(username) {
   }
 
   if (session) {
-    // Fast: try HTML deep extraction (no extra requests, ~0ms)
+    // Fast: try HTML deep extraction (no extra requests)
     const htmlResult = extractUserFromHtml(session.html, username);
     if (htmlResult?.posts?.items?.length > 0) return htmlResult;
 
-    // Fast: try Instagram API endpoints — hard cap at 2.5s so we never block the user
-    const apiResult = await Promise.race([
-      sweepEndpoints(username, session),
-      new Promise(r => setTimeout(() => r(null), 2500))
-    ]);
-    if (apiResult && !apiResult.blocked && apiResult?.posts?.items?.length > 0) return apiResult;
+    // Build partial immediately — profile (name/avatar/stats) visible to user right away
+    const partial = (htmlResult && htmlResult.profile?.username) ? htmlResult : normalizeMetaOnly(username, session.html);
+    partial.backgroundLoading = true;
 
-    // Schedule full browser fetch in background — returns in ~20s, stored in cache
+    // Start browser fetch in background — needs the most lead time, kick it off first
     if (process.env.ENABLE_BROWSER_FALLBACK === 'true') {
       scheduleBrowserFetch(username, cacheKey);
     }
 
-    // If we got at least basic user data from HTML or API, try fetching stories
-    // server-side right now (only works when INSTAGRAM_SESSION_ID is set in .env)
-    const partial = (htmlResult?.profile?.username) ? htmlResult : normalizeMetaOnly(username, session.html);
-
-    if (partial?.profile?.id && process.env.INSTAGRAM_SESSION_ID) {
-      const storyItems = await fetchStoriesServerSide(partial.profile.id, username, session);
-      if (storyItems.length && partial.stories) {
-        const { normalizeStoryItems } = require('./instagramNormalizer');
-        partial.stories.items     = normalizeStoryItems(storyItems);
-        partial.stories.available = true;
-        partial.stories.message   = undefined;
-        console.log(`[fetcher] Server-side stories: ${storyItems.length} for @${username}`);
+    // Sweep API endpoints in background — if they succeed quickly they update the cache too
+    sweepEndpoints(username, session).then(apiResult => {
+      if (apiResult && !apiResult.blocked && apiResult.posts?.items?.length > 0) {
+        setCache(cacheKey, apiResult);
+        console.log(`[fetcher] API sweep cached @${username}: ${apiResult.posts.items.length} posts`);
       }
-    }
+    }).catch(() => {});
 
-    partial.backgroundLoading = process.env.ENABLE_BROWSER_FALLBACK === 'true';
     return partial;
   }
 
