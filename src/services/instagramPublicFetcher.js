@@ -110,6 +110,40 @@ async function fetchProfileSession(username) {
   return { html, cookie, csrfToken, status: res.status };
 }
 
+// ─── Server-side story fetch (via proxy, uses dedicated story session if set) ──
+async function fetchStoriesServerSide(userId, username, session) {
+  if (!userId) return [];
+  const storySessionId = process.env.INSTAGRAM_STORY_SESSION_ID || process.env.INSTAGRAM_SESSION_ID;
+  if (!storySessionId) return [];
+  const storySession = storySessionId !== process.env.INSTAGRAM_SESSION_ID
+    ? { ...session, cookie: `sessionid=${decodeURIComponent(storySessionId)}`, csrfToken: session?.csrfToken }
+    : session;
+  try {
+    const endpoints = [
+      `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`,
+      `https://www.instagram.com/api/v1/feed/user_story/?user_id=${userId}`,
+      `https://www.instagram.com/api/v1/user/${userId}/story/`
+    ];
+    for (const url of endpoints) {
+      const res = await get(url, buildApiHeaders(username, storySession));
+      if (res.status >= 400) continue;
+      const data = typeof res.data === 'object' ? res.data : tryJsonParse(res.data);
+      if (!data) continue;
+      const items =
+        data.reels_media?.[0]?.items ||
+        data.reels?.[String(userId)]?.items ||
+        data.story?.items ||
+        data.items ||
+        [];
+      if (items.length) {
+        console.log(`[fetcher] Stories via server-side HTTP: ${items.length} items for @${username}`);
+        return items;
+      }
+    }
+  } catch {}
+  return [];
+}
+
 // ─── API endpoint attempts ────────────────────────────────────────────────────
 async function tryWebProfileInfo(username, session) {
   const url = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`;
@@ -222,6 +256,21 @@ async function fetchAllPublic(username) {
     // Build partial immediately — profile (name/avatar/stats) visible to user right away
     const partial = (htmlResult && htmlResult.profile?.username) ? htmlResult : normalizeMetaOnly(username, session.html);
     partial.backgroundLoading = true;
+
+    // Fetch stories server-side via proxy immediately (faster than waiting for browser)
+    if (partial?.profile?.id && process.env.INSTAGRAM_SESSION_ID) {
+      const { normalizeStoryItems } = require('./instagramNormalizer');
+      fetchStoriesServerSide(partial.profile.id, username, session).then(storyItems => {
+        if (storyItems.length) {
+          partial.stories = {
+            available: true,
+            items: normalizeStoryItems(storyItems),
+            message: undefined
+          };
+          setCache(cacheKey, partial);
+        }
+      }).catch(() => {});
+    }
 
     // Start browser fetch in background — needs the most lead time, kick it off first
     if (process.env.ENABLE_BROWSER_FALLBACK === 'true') {
