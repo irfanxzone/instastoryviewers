@@ -46,31 +46,27 @@ async function resolveAndLoad(rawInput, { forceRefresh = false } = {}) {
 
   if (forceRefresh) deleteCache(key);
 
-  // Try fresh cache first
   const cached = getCache(key, { allowStale: true });
+
+  // Fresh cache — return instantly
   if (cached && !cached.stale && !forceRefresh) {
     return { data: cached.data, cached };
   }
 
-  // Fetch from Instagram
-  let fresh;
+  // Stale cache — return immediately and refresh in the background (true SWR)
+  if (cached?.stale && !forceRefresh) {
+    fetchAllPublic(resolved.username)
+      .then(fresh => setCache(key, fresh))
+      .catch(() => {});
+    return { data: cached.data, cached };
+  }
+
+  // No cache — must wait for a fresh fetch
   try {
-    fresh = await fetchAllPublic(resolved.username);
+    const fresh = await fetchAllPublic(resolved.username);
     setCache(key, fresh);
     return { data: fresh, cached: null };
   } catch (fetchErr) {
-    // On upstream failure, serve stale cache with warning
-    if (cached?.stale) {
-      return {
-        data: {
-          ...cached.data,
-          source: 'stale_cache_after_instagram_block',
-          stale: true,
-          warning: 'Fresh Instagram request failed, showing cached public data.'
-        },
-        cached
-      };
-    }
     throw fetchErr;
   }
 }

@@ -28,7 +28,8 @@ const STEALTH = `
   Object.defineProperty(navigator,'languages',{get:()=>['en-US','en']});
   window.chrome={runtime:{},loadTimes:()=>{},csi:()=>{},app:{}};
 `;
-const CHROME_DATA = path.join(process.cwd(), '.chrome-data');
+// Each PM2 worker gets its own data dir so they don't fight over Chrome's lock file
+const CHROME_DATA = path.join(process.cwd(), `.chrome-data-${process.pid}`);
 
 // ─── Persistent browser singleton ────────────────────────────────────────────
 let _pptr = null, _chromePath = null, _browser = null, _launching = null;
@@ -48,6 +49,20 @@ function getProxyArgs() {
 }
 
 let _proxyAuth = null;
+
+// Wipe chrome data when INSTAGRAM_SESSION_ID changes so stale login state can't persist
+function clearChromeDataIfSessionChanged() {
+  const stamp = (process.env.INSTAGRAM_SESSION_ID || '').slice(0, 24);
+  if (!stamp) return;
+  const stampFile = path.join(process.cwd(), `.session-stamp-${process.pid}`);
+  let stored = '';
+  try { stored = fs.readFileSync(stampFile, 'utf8').trim(); } catch {}
+  if (stamp !== stored) {
+    try { fs.rmSync(CHROME_DATA, { recursive: true, force: true }); } catch {}
+    try { fs.writeFileSync(stampFile, stamp); } catch {}
+    console.log('[browser] Session changed — cleared .chrome-data for fresh login');
+  }
+}
 
 async function getBrowser() {
   if (browserReady()) return _browser;
@@ -87,6 +102,7 @@ async function openPage() {
 // ─── Warmup ───────────────────────────────────────────────────────────────────
 async function warmupBrowser() {
   if (process.env.ENABLE_BROWSER_FALLBACK !== 'true') return;
+  clearChromeDataIfSessionChanged();
   try { _pptr = require('puppeteer-core'); } catch { console.warn('[browser] puppeteer-core not installed'); return; }
   _chromePath = findChrome();
   if (!_chromePath) { console.warn('[browser] Chrome not found — set CHROME_EXECUTABLE_PATH in .env'); return; }
@@ -145,7 +161,6 @@ const IN_PAGE_SCRIPT = async function(username) {
   await window.igBatch({ type: 'init', user, totalCount: totalPosts, moreAvail: totalPosts > 0 });
 
   // ── Stories — fetch FIRST (before the long post loop) ─────────────────────
-  // Must run early so they appear quickly; post pagination can take minutes.
   try {
     const storyEndpoints = [
       `/api/v1/feed/reels_media/?reel_ids=${uid}`,
@@ -153,20 +168,25 @@ const IN_PAGE_SCRIPT = async function(username) {
       `/api/v1/user/${uid}/story/`
     ];
     for (const ep of storyEndpoints) {
-      const d = await GET(ep).catch(() => null);
-      if (!d) continue;
-      const items =
-        d.reels_media?.[0]?.items ||
-        d.reels?.[String(uid)]?.items ||
-        d.story?.items ||
-        d.items ||
-        [];
+      let status = 0, d = null;
+      try {
+        const r = await fetch(ep, { headers: H, credentials: 'include' });
+        status = r.status;
+        d = await r.json().catch(() => null);
+      } catch (e) {
+        console.log(`[ig-story] ${ep.split('?')[0]} threw: ${e.message}`);
+        continue;
+      }
+      const items = status < 400
+        ? (d?.reels_media?.[0]?.items || d?.reels?.[String(uid)]?.items || d?.story?.items || d?.items || [])
+        : [];
+      console.log(`[ig-story] ${ep.split('?')[0]} → ${status}, items=${items.length}, body=${JSON.stringify(d).slice(0, 250)}`);
       if (items.length) {
         await window.igBatch({ type: 'stories', items, moreAvail: false });
         break;
       }
     }
-  } catch {}
+  } catch (e) { console.log(`[ig-story] outer error: ${e.message}`); }
 
   // ── Posts — ALL pages ─────────────────────────────────────────────────────
   // Strategy:
@@ -275,6 +295,12 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
   let page;
   try { page = await openPage(); }
   catch (err) { console.warn('[browser] Could not open page:', err.message); return null; }
+
+  // Surface console.log calls from the in-page script (story diagnostics tagged [ig-story])
+  page.on('console', msg => {
+    const text = msg.text();
+    if (text.startsWith('[ig-story]')) console.log(`[browser-page] ${text}`);
+  });
 
   // Accumulate batches in Node.js scope
   const accPosts    = [];

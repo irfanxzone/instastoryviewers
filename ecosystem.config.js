@@ -3,7 +3,7 @@ module.exports = {
     {
       name: 'instagram-viewer',
       script: 'src/server.js',
-      instances: 'max',
+      instances: 2,
       exec_mode: 'cluster',
       max_memory_restart: '500M',
       env: {

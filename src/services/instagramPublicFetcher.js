@@ -40,7 +40,7 @@ function scheduleBrowserFetch(username, cacheKey) {
         if (result.profile?.id && process.env.INSTAGRAM_SESSION_ID) {
           try {
             const { normalizeStoryItems } = require('./instagramNormalizer');
-            const storyItems = await fetchStoriesServerSide(result.profile.id, username, null);
+            const storyItems = await fetchStoriesServerSide(result.profile.id, username, {});
             if (storyItems.length) {
               result.stories = { available: true, items: normalizeStoryItems(storyItems), message: undefined };
               console.log(`[bg] Stories fetched for @${username}: ${storyItems.length} items`);
@@ -95,11 +95,20 @@ function buildApiHeaders(username, s) {
 }
 
 // ─── Session preload ──────────────────────────────────────────────────────────
+// Cache the instagram.com homepage cookies for 30 min — saves one proxy round-trip per cold fetch
+let _baseCookiesCache = { value: '', fetchedAt: 0 };
+const BASE_COOKIE_TTL_MS = 30 * 60 * 1000;
+
 async function fetchBaseCookies() {
+  if (_baseCookiesCache.value && Date.now() - _baseCookiesCache.fetchedAt < BASE_COOKIE_TTL_MS) {
+    return _baseCookiesCache.value;
+  }
   try {
     const r = await get('https://www.instagram.com/', { 'User-Agent': PROFILE_UA, 'Accept': 'text/html,*/*', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-Mode': 'navigate', 'Upgrade-Insecure-Requests': '1' });
-    return parseSetCookies(r.headers?.['set-cookie']);
-  } catch { return ''; }
+    const cookies = parseSetCookies(r.headers?.['set-cookie']);
+    if (cookies) _baseCookiesCache = { value: cookies, fetchedAt: Date.now() };
+    return cookies || _baseCookiesCache.value;
+  } catch { return _baseCookiesCache.value; }
 }
 
 async function fetchProfileSession(username) {
@@ -143,12 +152,14 @@ async function fetchStoriesServerSide(userId, username, session) {
     };
     for (const url of endpoints) {
       const res = await get(url, anonHeaders);
-      if (res.status >= 400) continue;
       const data = typeof res.data === 'object' ? res.data : tryJsonParse(res.data);
-      const items = data?.reels_media?.[0]?.items || data?.reels?.[String(userId)]?.items || data?.story?.items || data?.items || [];
-      if (items.length) { console.log(`[fetcher] Stories (anon proxy): ${items.length} for @${username}`); return items; }
+      const items = res.status < 400
+        ? (data?.reels_media?.[0]?.items || data?.reels?.[String(userId)]?.items || data?.story?.items || data?.items || [])
+        : [];
+      console.log(`[stories:anon] ${url.split('instagram.com')[1]?.split('?')[0]} → ${res.status}, items=${items.length}, body=${JSON.stringify(data).slice(0, 300)}`);
+      if (items.length) return items;
     }
-  } catch {}
+  } catch (e) { console.warn(`[stories:anon] request error: ${e.message}`); }
 
   // Try 2: with session cookie through proxy
   const storySessionId = process.env.INSTAGRAM_STORY_SESSION_ID || process.env.INSTAGRAM_SESSION_ID;
@@ -157,12 +168,14 @@ async function fetchStoriesServerSide(userId, username, session) {
   try {
     for (const url of endpoints) {
       const res = await get(url, buildApiHeaders(username, storySession));
-      if (res.status >= 400) continue;
       const data = typeof res.data === 'object' ? res.data : tryJsonParse(res.data);
-      const items = data?.reels_media?.[0]?.items || data?.reels?.[String(userId)]?.items || data?.story?.items || data?.items || [];
-      if (items.length) { console.log(`[fetcher] Stories (session proxy): ${items.length} for @${username}`); return items; }
+      const items = res.status < 400
+        ? (data?.reels_media?.[0]?.items || data?.reels?.[String(userId)]?.items || data?.story?.items || data?.items || [])
+        : [];
+      console.log(`[stories:session] ${url.split('instagram.com')[1]?.split('?')[0]} → ${res.status}, items=${items.length}, body=${JSON.stringify(data).slice(0, 300)}`);
+      if (items.length) return items;
     }
-  } catch {}
+  } catch (e) { console.warn(`[stories:session] request error: ${e.message}`); }
 
   return [];
 }
@@ -197,14 +210,17 @@ async function tryGraphQlHash(username, hash, session) {
   } catch { return null; }
 }
 async function sweepEndpoints(username, session) {
-  const wpi = await tryWebProfileInfo(username, session);
-  if (wpi && !wpi.blocked) return wpi;
-  for (const hash of getQueryHashes()) {
-    const r = await tryGraphQlHash(username, hash, session);
-    if (r && !r.blocked) return r;
-    if (r?.blocked) break;
+  const tasks = [
+    tryWebProfileInfo(username, session),
+    ...getQueryHashes().map(h => tryGraphQlHash(username, h, session))
+  ];
+  try {
+    return await Promise.any(
+      tasks.map(p => p.then(r => (r && !r.blocked ? r : Promise.reject(null))))
+    );
+  } catch {
+    return null;
   }
-  return wpi?.blocked ? { blocked: true } : null;
 }
 
 // ─── HTML extraction ──────────────────────────────────────────────────────────
@@ -280,19 +296,31 @@ async function fetchAllPublic(username) {
     const partial = (htmlResult && htmlResult.profile?.username) ? htmlResult : normalizeMetaOnly(username, session.html);
     partial.backgroundLoading = true;
 
-    // Fetch stories server-side via proxy immediately (faster than waiting for browser)
-    if (partial?.profile?.id && process.env.INSTAGRAM_SESSION_ID) {
+    // Fetch stories server-side — needs profile.id; fall back to web_profile_info when HTML gave null
+    if (process.env.INSTAGRAM_SESSION_ID) {
       const { normalizeStoryItems } = require('./instagramNormalizer');
-      fetchStoriesServerSide(partial.profile.id, username, session).then(storyItems => {
-        if (storyItems.length) {
-          partial.stories = {
-            available: true,
-            items: normalizeStoryItems(storyItems),
-            message: undefined
-          };
-          setCache(cacheKey, partial);
-        }
-      }).catch(() => {});
+      const fireStories = (userId) => {
+        fetchStoriesServerSide(userId, username, session).then(storyItems => {
+          if (storyItems.length) {
+            partial.stories = { available: true, items: normalizeStoryItems(storyItems), message: undefined };
+            setCache(cacheKey, partial);
+          }
+        }).catch(() => {});
+      };
+      if (partial.profile?.id) {
+        fireStories(partial.profile.id);
+      } else {
+        // HTML extraction returned no ID — fetch it from web_profile_info before stories can fire
+        tryWebProfileInfo(username, session).then(r => {
+          if (r && !r.blocked && r.profile?.id) {
+            partial.profile.id = r.profile.id;
+            console.log(`[fetcher] Resolved profile.id=${r.profile.id} via API for @${username}`);
+            fireStories(r.profile.id);
+          } else {
+            console.warn(`[fetcher] Could not resolve profile.id for @${username} — fast-path stories skipped`);
+          }
+        }).catch(() => {});
+      }
     }
 
     // Start browser fetch in background — needs the most lead time, kick it off first

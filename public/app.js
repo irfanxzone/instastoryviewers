@@ -289,21 +289,15 @@ async function runSearch(raw) {
   searchBtn.disabled = true;
 
   try {
-    // ── Resolve ──────────────────────────────────────────────────────────────
+    // ── Phase 1: resolve + load in one request ────────────────────────────
     startLoading(value);
-    const rr = await fetch(`/api/ig/resolve?input=${encodeURIComponent(value)}`);
-    const rd = await rr.json();
-    if (!rr.ok || !rd.success) throw new Error(rd.error || 'Could not resolve this input.');
-    if (!rd.resolved.username) throw new Error(rd.resolved.message || 'Paste a username or profile link.');
-
-    const username = rd.resolved.username;
-    _currentUser = username;
-    setStatus(`Loading @${username}…`);
-
-    // ── Phase 1: fast profile (meta / cached) ─────────────────────────────
-    const r1 = await fetch(`/api/ig/all/${encodeURIComponent(username)}`);
+    const r1 = await fetch(`/api/ig/all/${encodeURIComponent(value)}`);
     const d1  = await r1.json();
     if (!r1.ok || !d1.success) throw new Error(d1.error || 'Could not load Instagram data.');
+
+    const username = d1.profile?.username || value.trim().replace(/^@/, '');
+    _currentUser = username;
+    setStatus(`Loading @${username}…`);
 
     renderProfile(d1);
 

@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev && npm install -g pm2
 
 COPY . .
 
@@ -35,4 +35,4 @@ ENV NODE_ENV=production
 ENV PORT=3000
 
 EXPOSE 3000
-CMD ["node", "src/server.js"]
+CMD ["pm2-runtime", "ecosystem.config.js"]
