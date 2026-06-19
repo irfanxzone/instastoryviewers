@@ -104,6 +104,8 @@ app.get('/api/health', (req, res) => {
 
 // ─── Static Frontend ──────────────────────────────────────────────────────────
 const publicDir = path.join(__dirname, '..', 'public');
+// favicon.ico fallback — browsers and crawlers that don't support SVG icons
+app.get('/favicon.ico', (req, res) => res.redirect(301, '/logo.svg'));
 app.use(express.static(publicDir, { maxAge: '1h', etag: true }));
 
 // ─── Clean URLs (no .html extension) ─────────────────────────────────────────
