@@ -310,33 +310,6 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
     if (text.startsWith('[ig-story]') || text.startsWith('[ig-')) console.log(`[browser-page] ${text}`);
   });
 
-  // ── Network interception for stories ────────────────────────────────────────
-  // When Chrome loads the profile page, Instagram's own JS calls the story API.
-  // Intercepting those responses is the most reliable story source because the
-  // browser handles cookies/CSRF automatically with no mismatch.
-  const interceptedStories = [];
-  page.on('response', async response => {
-    try {
-      const url = response.url();
-      if (!url.includes('instagram.com')) return;
-      const isStoryUrl = url.includes('reels_media') || url.includes('user_story') ||
-                         (url.includes('/story') && !url.includes('instagram.com/stories/'));
-      if (!isStoryUrl) return;
-      const ct = response.headers()['content-type'] || '';
-      if (!ct.includes('json')) return;
-      const data = await response.json().catch(() => null);
-      if (!data) return;
-      const items =
-        data?.reels_media?.[0]?.items ||
-        Object.values(data?.reels || {})[0]?.items ||
-        data?.reel?.items || data?.story?.items || data?.items || [];
-      if (items.length) {
-        console.log(`[browser] Intercepted ${items.length} story item(s) from network`);
-        interceptedStories.push(...items);
-      }
-    } catch {}
-  });
-
   // Accumulate batches in Node.js scope
   const accPosts    = [];
   const accReels    = [];
@@ -421,29 +394,6 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
     await page.evaluate(IN_PAGE_SCRIPT, username).catch(err => {
       console.warn('[browser] Script error:', err.message);
     });
-
-    // Merge intercepted stories into rawUser if the script didn't find them
-    if (interceptedStories.length && rawUser && !rawUser._stories?.length) {
-      rawUser._stories = interceptedStories;
-      console.log(`[browser] Stories from network interception: ${interceptedStories.length}`);
-    }
-
-    // Last-resort: navigate directly to the stories page if still no stories
-    if (!rawUser?._stories?.length && rawUser && !rawUser.is_private) {
-      try {
-        console.log(`[browser] Navigating to stories page for @${username}…`);
-        await page.goto(`https://www.instagram.com/stories/${encodeURIComponent(username)}/`, {
-          waitUntil: 'domcontentloaded', timeout: 12000
-        });
-        await new Promise(r => setTimeout(r, 3000));
-        if (interceptedStories.length) {
-          rawUser._stories = interceptedStories;
-          console.log(`[browser] Stories page yielded: ${interceptedStories.length}`);
-        }
-      } catch (e) {
-        console.warn(`[browser] Stories page nav failed: ${e.message}`);
-      }
-    }
 
     // Build final result from accumulated data
     if (rawUser) {
