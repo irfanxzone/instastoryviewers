@@ -409,7 +409,28 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
       waitUntil: 'domcontentloaded', timeout: 20000
     });
 
-    // Wait for Instagram's own JS to fire its network requests (stories often load here)
+    // Detect scraping challenge and auto-dismiss it
+    const finalUrl = page.url();
+    if (finalUrl.includes('scraping_warning') || finalUrl.includes('challenge')) {
+      console.warn(`[browser] Scraping challenge detected — attempting to dismiss…`);
+      try {
+        // Click the "OK" / "Continue" button on the challenge page
+        await page.evaluate(() => {
+          const btn = document.querySelector('button[type="button"], button[type="submit"]');
+          if (btn) btn.click();
+        });
+        await new Promise(r => setTimeout(r, 2000));
+        // Navigate to the actual profile after dismissal
+        await page.goto(`https://www.instagram.com/${encodeURIComponent(username)}/`, {
+          waitUntil: 'domcontentloaded', timeout: 15000
+        });
+        console.log(`[browser] Post-challenge URL: ${page.url()}`);
+      } catch (e) {
+        console.warn(`[browser] Challenge dismiss failed: ${e.message}`);
+      }
+    }
+
+    // Wait for Instagram's own JS to fire its network requests
     await new Promise(r => setTimeout(r, 3000));
 
     // Run the full in-page script: profile + ALL posts + ALL reels + stories + highlights
