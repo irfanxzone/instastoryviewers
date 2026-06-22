@@ -325,11 +325,20 @@ function pollForMedia(username, delay) {
       const d = await r.json();
       if (!d.success) return;
 
-      // Always refresh panels — even partial batches should show immediately
-      const prevPosts = window._igData?.posts?.items?.length || 0;
-      const newPosts  = d.posts?.items?.length || 0;
+      // Re-render whenever posts, stories, reels or highlights increase — or loading finishes
+      const prevPosts      = window._igData?.posts?.items?.length      || 0;
+      const prevStories    = window._igData?.stories?.items?.length    || 0;
+      const prevReels      = window._igData?.reels?.items?.length      || 0;
+      const prevHighlights = window._igData?.highlights?.items?.length || 0;
+      const newPosts      = d.posts?.items?.length      || 0;
+      const newStories    = d.stories?.items?.length    || 0;
+      const newReels      = d.reels?.items?.length      || 0;
+      const newHighlights = d.highlights?.items?.length || 0;
 
-      if (newPosts > prevPosts || !d.backgroundLoading) {
+      const hasNewData = newPosts > prevPosts || newStories > prevStories ||
+                         newReels > prevReels || newHighlights > prevHighlights;
+
+      if (hasNewData || !d.backgroundLoading) {
         renderProfile(d, true);  // smooth panel-only update
       }
 

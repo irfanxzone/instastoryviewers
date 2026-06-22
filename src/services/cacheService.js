@@ -50,7 +50,15 @@ function saveDisk() {
  * @returns {{ hit: boolean, stale: boolean, ageMs: number, data: object } | null}
  */
 function getCache(key, { allowStale = true } = {}) {
-  const item = memory.get(key) || disk[key];
+  let item = memory.get(key) || disk[key];
+  // On miss, re-read disk — another PM2 worker may have written a newer entry
+  if (!item) {
+    try {
+      const fresh = JSON.parse(fs.readFileSync(cacheFile, 'utf8') || '{}');
+      item = fresh[key];
+      if (item) { disk[key] = item; memory.set(key, item); }
+    } catch {}
+  }
   if (!item || !item.savedAt || !item.data) return null;
 
   const ageMs = Date.now() - item.savedAt;

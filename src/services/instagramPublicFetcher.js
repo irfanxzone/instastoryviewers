@@ -37,19 +37,21 @@ function scheduleBrowserFetch(username, cacheKey) {
   const job = fetchViaBrowserFallback(username, cacheKey)
     .then(async result => {
       if (result?.success && (result.posts?.items?.length > 0 || result.status === 'PRIVATE_ACCOUNT')) {
-        // Fetch stories via proxy now that we have the real profile ID from browser
-        if (result.profile?.id && sessionService.hasAnySessions()) {
+        // Browser already fetched stories via network interception — only try the HTTP
+        // path if the browser came back empty (avoids overwriting good story data with
+        // a failed redirect from the server-side HTTP client).
+        if (!result.stories?.items?.length && result.profile?.id && sessionService.hasAnySessions()) {
           try {
             const { normalizeStoryItems } = require('./instagramNormalizer');
             const storyItems = await fetchStoriesServerSide(result.profile.id, username, {});
             if (storyItems.length) {
               result.stories = { available: true, items: normalizeStoryItems(storyItems), message: undefined };
-              console.log(`[bg] Stories fetched for @${username}: ${storyItems.length} items`);
+              console.log(`[bg] Stories fetched via HTTP for @${username}: ${storyItems.length} items`);
             }
           } catch {}
         }
         setCache(cacheKey, result);
-        console.log(`[bg] Browser fetch done @${username}: ${result.posts?.items?.length || 0} posts`);
+        console.log(`[bg] Browser fetch done @${username}: ${result.posts?.items?.length || 0} posts, ${result.stories?.items?.length || 0} stories`);
       }
     })
     .catch(err => console.warn(`[bg] Browser fetch failed @${username}: ${err?.message}`))
