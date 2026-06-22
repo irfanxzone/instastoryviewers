@@ -7,6 +7,7 @@ const { fetchViaBrowserFallback } = require('./browserFallbackService');
 const { isLoginWallText, isBlockedResponse, NotFoundError } = require('../utils/errors');
 const proxyService = require('./proxyService');
 const { setCache } = require('./cacheService');
+const sessionService = require('./sessionService');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 function getQueryHashes() {
@@ -37,7 +38,7 @@ function scheduleBrowserFetch(username, cacheKey) {
     .then(async result => {
       if (result?.success && (result.posts?.items?.length > 0 || result.status === 'PRIVATE_ACCOUNT')) {
         // Fetch stories via proxy now that we have the real profile ID from browser
-        if (result.profile?.id && process.env.INSTAGRAM_SESSION_ID) {
+        if (result.profile?.id && sessionService.hasAnySessions()) {
           try {
             const { normalizeStoryItems } = require('./instagramNormalizer');
             const storyItems = await fetchStoriesServerSide(result.profile.id, username, {});
@@ -161,21 +162,31 @@ async function fetchStoriesServerSide(userId, username, session) {
     }
   } catch (e) { console.warn(`[stories:anon] request error: ${e.message}`); }
 
-  // Try 2: with session cookie through proxy
-  const storySessionId = process.env.INSTAGRAM_STORY_SESSION_ID || process.env.INSTAGRAM_SESSION_ID;
-  if (!storySessionId) return [];
-  const storySession = { cookie: `sessionid=${decodeURIComponent(storySessionId)}`, csrfToken: session?.csrfToken };
-  try {
-    for (const url of endpoints) {
-      const res = await get(url, buildApiHeaders(username, storySession));
-      const data = typeof res.data === 'object' ? res.data : tryJsonParse(res.data);
-      const items = res.status < 400
-        ? (data?.reels_media?.[0]?.items || data?.reels?.[String(userId)]?.items || data?.story?.items || data?.items || [])
-        : [];
-      console.log(`[stories:session] ${url.split('instagram.com')[1]?.split('?')[0]} → ${res.status}, items=${items.length}, body=${JSON.stringify(data).slice(0, 300)}`);
-      if (items.length) return items;
+  // Try 2: with session pool — rotate up to 3 sessions, mark failures & skip
+  const sessionPool = sessionService.getSessionsForRetry(3);
+  if (!sessionPool.length) return [];
+
+  for (const sessionId of sessionPool) {
+    const storySession = { cookie: `sessionid=${sessionId}`, csrfToken: session?.csrfToken };
+    let sessionFailed = false;
+    try {
+      for (const url of endpoints) {
+        const res = await get(url, buildApiHeaders(username, storySession));
+        const data = typeof res.data === 'object' ? res.data : tryJsonParse(res.data);
+        const items = res.status < 400
+          ? (data?.reels_media?.[0]?.items || data?.reels?.[String(userId)]?.items || data?.story?.items || data?.items || [])
+          : [];
+        console.log(`[stories:session] ${url.split('instagram.com')[1]?.split('?')[0]} → ${res.status}, items=${items.length}`);
+        if ([401, 403, 429].includes(res.status)) { sessionFailed = true; break; }
+        if (items.length) return items;
+      }
+    } catch (e) { console.warn(`[stories:session] request error: ${e.message}`); }
+    if (sessionFailed) {
+      sessionService.markFailed(sessionId);
+      console.warn(`[stories:session] session rate-limited, trying next. pool: ${JSON.stringify(sessionService.stats())}`);
+      continue;
     }
-  } catch (e) { console.warn(`[stories:session] request error: ${e.message}`); }
+  }
 
   return [];
 }
@@ -297,7 +308,7 @@ async function fetchAllPublic(username) {
     partial.backgroundLoading = true;
 
     // Fetch stories server-side — needs profile.id; fall back to web_profile_info when HTML gave null
-    if (process.env.INSTAGRAM_SESSION_ID) {
+    if (sessionService.hasAnySessions()) {
       const { normalizeStoryItems } = require('./instagramNormalizer');
       const fireStories = (userId) => {
         fetchStoriesServerSide(userId, username, session).then(storyItems => {
@@ -328,8 +339,12 @@ async function fetchAllPublic(username) {
       scheduleBrowserFetch(username, cacheKey);
     }
 
-    // Sweep API endpoints in background — if they succeed quickly they update the cache too
-    sweepEndpoints(username, session).then(apiResult => {
+    // Sweep API endpoints in background — inject a rotated session for better API access
+    const sweepSessionId = sessionService.getNextSession();
+    const sweepSession = sweepSessionId
+      ? { ...session, cookie: `sessionid=${sweepSessionId}${session?.cookie ? `; ${session.cookie}` : ''}` }
+      : session;
+    sweepEndpoints(username, sweepSession).then(apiResult => {
       if (apiResult && !apiResult.blocked && apiResult.posts?.items?.length > 0) {
         setCache(cacheKey, apiResult);
         console.log(`[fetcher] API sweep cached @${username}: ${apiResult.posts.items.length} posts`);
