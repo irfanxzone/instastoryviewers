@@ -109,7 +109,7 @@ async function warmupBrowser() {
   try {
     const page = await openPage();
     // Inject session on warmup so cookies are stored in the persistent profile
-    const sessionId = getSessionId();
+    const sessionId = pickSession();
     if (sessionId) {
       await page.setCookie({ name: 'sessionid', value: sessionId, domain: '.instagram.com', path: '/', httpOnly: true, secure: true });
       console.log('[browser] Session cookie injected during pre-warm');
@@ -278,6 +278,14 @@ function getSessionId() {
   try { return decodeURIComponent(raw); } catch { return raw; }
 }
 
+// Pick a session from the pool, fall back to the single env var
+function pickSession() {
+  try {
+    const { getNextSession } = require('./sessionService');
+    return getNextSession() || getSessionId();
+  } catch { return getSessionId(); }
+}
+
 // ─── Main fallback function ───────────────────────────────────────────────────
 async function fetchViaBrowserFallback(username, cacheKey = null) {
   if (process.env.ENABLE_BROWSER_FALLBACK !== 'true') return null;
@@ -299,7 +307,34 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
   // Surface console.log calls from the in-page script (story diagnostics tagged [ig-story])
   page.on('console', msg => {
     const text = msg.text();
-    if (text.startsWith('[ig-story]')) console.log(`[browser-page] ${text}`);
+    if (text.startsWith('[ig-story]') || text.startsWith('[ig-')) console.log(`[browser-page] ${text}`);
+  });
+
+  // ── Network interception for stories ────────────────────────────────────────
+  // When Chrome loads the profile page, Instagram's own JS calls the story API.
+  // Intercepting those responses is the most reliable story source because the
+  // browser handles cookies/CSRF automatically with no mismatch.
+  const interceptedStories = [];
+  page.on('response', async response => {
+    try {
+      const url = response.url();
+      if (!url.includes('instagram.com')) return;
+      const isStoryUrl = url.includes('reels_media') || url.includes('user_story') ||
+                         (url.includes('/story') && !url.includes('instagram.com/stories/'));
+      if (!isStoryUrl) return;
+      const ct = response.headers()['content-type'] || '';
+      if (!ct.includes('json')) return;
+      const data = await response.json().catch(() => null);
+      if (!data) return;
+      const items =
+        data?.reels_media?.[0]?.items ||
+        Object.values(data?.reels || {})[0]?.items ||
+        data?.reel?.items || data?.story?.items || data?.items || [];
+      if (items.length) {
+        console.log(`[browser] Intercepted ${items.length} story item(s) from network`);
+        interceptedStories.push(...items);
+      }
+    } catch {}
   });
 
   // Accumulate batches in Node.js scope
@@ -361,9 +396,9 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
       } catch (e) { console.warn('[browser] igBatch error:', e.message); }
     });
 
-    // Inject session cookie — unlocks stories, highlights and richer profile data.
-    // sessionid must be URL-decoded before being set as a browser cookie.
-    const sessionId = getSessionId();
+    // Inject session cookie from pool — unlocks stories, highlights and richer data.
+    // Rotates through the 8-session pool so no single account gets hammered.
+    const sessionId = pickSession();
     const dsUserId  = process.env.INSTAGRAM_DS_USER_ID || '';
     if (sessionId) {
       const cookies = [
@@ -371,7 +406,7 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
         { name: 'ds_user_id', value: dsUserId,  domain: '.instagram.com', path: '/', httpOnly: false, secure: true }
       ].filter(c => c.value);
       await page.setCookie(...cookies);
-      console.log(`[browser] Session injected for @${username} (${sessionId.slice(0,8)}…)`);
+      console.log(`[browser] Session injected for @${username} (…${sessionId.slice(-8)})`);
     }
 
     console.log(`[browser] Fetching @${username}…`);
@@ -379,19 +414,42 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
       waitUntil: 'domcontentloaded', timeout: 20000
     });
 
-    // Wait up to 2s for network intercept to fire (Chrome's own JS hits web_profile_info)
-    await new Promise(r => setTimeout(r, 2000));
+    // Wait for Instagram's own JS to fire its network requests (stories often load here)
+    await new Promise(r => setTimeout(r, 3000));
 
     // Run the full in-page script: profile + ALL posts + ALL reels + stories + highlights
     await page.evaluate(IN_PAGE_SCRIPT, username).catch(err => {
       console.warn('[browser] Script error:', err.message);
     });
 
+    // Merge intercepted stories into rawUser if the script didn't find them
+    if (interceptedStories.length && rawUser && !rawUser._stories?.length) {
+      rawUser._stories = interceptedStories;
+      console.log(`[browser] Stories from network interception: ${interceptedStories.length}`);
+    }
+
+    // Last-resort: navigate directly to the stories page if still no stories
+    if (!rawUser?._stories?.length && rawUser && !rawUser.is_private) {
+      try {
+        console.log(`[browser] Navigating to stories page for @${username}…`);
+        await page.goto(`https://www.instagram.com/stories/${encodeURIComponent(username)}/`, {
+          waitUntil: 'domcontentloaded', timeout: 12000
+        });
+        await new Promise(r => setTimeout(r, 3000));
+        if (interceptedStories.length) {
+          rawUser._stories = interceptedStories;
+          console.log(`[browser] Stories page yielded: ${interceptedStories.length}`);
+        }
+      } catch (e) {
+        console.warn(`[browser] Stories page nav failed: ${e.message}`);
+      }
+    }
+
     // Build final result from accumulated data
     if (rawUser) {
       const synthetic = buildSyntheticUser(rawUser, accPosts, accReels, totalCount);
       const result    = normalizeProfileUser(synthetic, 'instagram_browser_fallback');
-      console.log(`[browser] @${username} complete: ${accPosts.length} posts, ${accReels.length} reels, ${rawUser._stories?.length||0} stories`);
+      console.log(`[browser] @${username} done: ${accPosts.length} posts, ${accReels.length} reels, ${rawUser._stories?.length||0} stories`);
       return result;
     }
 

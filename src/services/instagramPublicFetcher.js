@@ -162,12 +162,13 @@ async function fetchStoriesServerSide(userId, username, session) {
     }
   } catch (e) { console.warn(`[stories:anon] request error: ${e.message}`); }
 
-  // Try 2: with session pool — rotate up to 3 sessions, mark failures & skip
-  const sessionPool = sessionService.getSessionsForRetry(3);
+  // Try 2: warmed session pool — each entry has matching {cookie, csrfToken}
+  // so Instagram does not reject the request as a csrf mismatch.
+  const sessionPool = await sessionService.getFullSessionsForRetry(3);
   if (!sessionPool.length) return [];
 
-  for (const sessionId of sessionPool) {
-    const storySession = { cookie: `sessionid=${sessionId}`, csrfToken: session?.csrfToken };
+  for (const { cookie, csrfToken, decodedId } of sessionPool) {
+    const storySession = { cookie, csrfToken };
     let sessionFailed = false;
     try {
       for (const url of endpoints) {
@@ -182,8 +183,8 @@ async function fetchStoriesServerSide(userId, username, session) {
       }
     } catch (e) { console.warn(`[stories:session] request error: ${e.message}`); }
     if (sessionFailed) {
-      sessionService.markFailed(sessionId);
-      console.warn(`[stories:session] session rate-limited, trying next. pool: ${JSON.stringify(sessionService.stats())}`);
+      sessionService.markFailed(decodedId);
+      console.warn(`[stories:session] session rejected, trying next. pool: ${JSON.stringify(sessionService.stats())}`);
       continue;
     }
   }
@@ -339,12 +340,13 @@ async function fetchAllPublic(username) {
       scheduleBrowserFetch(username, cacheKey);
     }
 
-    // Sweep API endpoints in background — inject a rotated session for better API access
-    const sweepSessionId = sessionService.getNextSession();
-    const sweepSession = sweepSessionId
-      ? { ...session, cookie: `sessionid=${sweepSessionId}${session?.cookie ? `; ${session.cookie}` : ''}` }
-      : session;
-    sweepEndpoints(username, sweepSession).then(apiResult => {
+    // Sweep API endpoints in background — use a warmed session for proper auth
+    sessionService.getFullSessionsForRetry(1).then(pool => {
+      const sweepSession = pool[0]
+        ? { ...session, cookie: pool[0].cookie, csrfToken: pool[0].csrfToken }
+        : session;
+      return sweepEndpoints(username, sweepSession);
+    }).then(apiResult => {
       if (apiResult && !apiResult.blocked && apiResult.posts?.items?.length > 0) {
         setCache(cacheKey, apiResult);
         console.log(`[fetcher] API sweep cached @${username}: ${apiResult.posts.items.length} posts`);

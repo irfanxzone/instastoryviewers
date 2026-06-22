@@ -145,10 +145,14 @@ module.exports = app;
 
 if (require.main === module) {
   const { warmupBrowser } = require('./services/browserFallbackService');
+  const { warmAllInBackground } = require('./services/sessionService');
   app.listen(port, () => {
     console.log(`[server] Instagram Viewer running at http://localhost:${port}`);
     console.log(`[server] NODE_ENV=${process.env.NODE_ENV || 'development'}`);
     console.log(`[server] Browser fallback: ${process.env.ENABLE_BROWSER_FALLBACK === 'true' ? 'enabled' : 'disabled'}`);
+
+    // Pre-warm all session cookies so csrftoken is ready before first request
+    warmAllInBackground();
 
     if (process.env.ENABLE_BROWSER_FALLBACK === 'true') {
       setTimeout(() => warmupBrowser().catch(() => {}), 2000);
