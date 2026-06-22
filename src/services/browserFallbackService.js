@@ -168,7 +168,13 @@ const IN_PAGE_SCRIPT = async function(username) {
     }
   }
 
-  if (!user || !user.id) { console.log('[ig-init] no userId found, giving up'); return { ok: false }; }
+  if (!user || !user.id) {
+    const title = document.title || '';
+    const url   = window.location.href;
+    const isLogin = document.body?.innerText?.toLowerCase().includes('log in') && document.body?.innerText?.length < 5000;
+    console.log(`[ig-init] FAIL | url=${url} | title=${title.slice(0,60)} | bodyLen=${document.body?.innerText?.length} | looksLikeLogin=${isLogin}`);
+    return { ok: false };
+  }
   const uid        = user.id || user.pk;
   const totalPosts = user.edge_owner_to_timeline_media?.count || 0;
   console.log(`[ig-init] uid=${uid} totalPosts=${totalPosts}`);
