@@ -152,10 +152,26 @@ const IN_PAGE_SCRIPT = async function(username) {
 
   // ── Profile ───────────────────────────────────────────────────────────────
   const init = await GET(`/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`);
-  const user = init?.data?.user || init?.data?.xdt_api__v1__users__web_profile_info?.user || init?.user;
-  if (!user || (!user.username && !user.id)) return { ok: false };
+  let user = init?.data?.user || init?.data?.xdt_api__v1__users__web_profile_info?.user || init?.user;
+
+  // Fallback: extract userId from page DOM if web_profile_info is rate-limited (returns null)
+  if (!user || !user.id) {
+    const alUrl = document.querySelector('meta[property="al:ios:url"]')?.content || '';
+    const pageId = alUrl.match(/id=(\d+)/)?.[1];
+    console.log(`[ig-init] web_profile_info failed, al:ios:url id=${pageId||'not found'}`);
+    if (pageId) {
+      // Minimal user object — enough to fetch stories and posts
+      user = { id: pageId, username, pk: pageId,
+               edge_owner_to_timeline_media: { count: 0, edges: [] },
+               edge_felix_video_timeline:    { edges: [] },
+               edge_highlight_reels:         { edges: [] } };
+    }
+  }
+
+  if (!user || !user.id) { console.log('[ig-init] no userId found, giving up'); return { ok: false }; }
   const uid        = user.id || user.pk;
   const totalPosts = user.edge_owner_to_timeline_media?.count || 0;
+  console.log(`[ig-init] uid=${uid} totalPosts=${totalPosts}`);
 
   // Report the initial user profile immediately
   await window.igBatch({ type: 'init', user, totalCount: totalPosts, moreAvail: totalPosts > 0 });
@@ -307,7 +323,7 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
   // Surface console.log calls from the in-page script (story diagnostics tagged [ig-story])
   page.on('console', msg => {
     const text = msg.text();
-    if (text.startsWith('[ig-story]') || text.startsWith('[ig-')) console.log(`[browser-page] ${text}`);
+    if (text.startsWith('[ig-')) console.log(`[browser-page] ${text}`);
   });
 
   // Accumulate batches in Node.js scope
