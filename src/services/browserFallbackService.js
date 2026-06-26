@@ -409,7 +409,7 @@ function pickSession() {
 }
 
 // ─── Main fallback function ───────────────────────────────────────────────────
-async function fetchViaBrowserFallback(username, cacheKey = null) {
+async function fetchViaBrowserFallbackAttempt(username, cacheKey = null) {
   if (process.env.ENABLE_BROWSER_FALLBACK !== 'true') return null;
 
   // Self-initialize if warmup never ran (e.g. warmup failed on startup)
@@ -431,6 +431,7 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
   try { page = await openPage(worker); }
   catch (err) {
     console.warn('[browser] Could not open page:', err.message);
+    igWorkerService.markWorkerFailed(worker, `openPage:${err.message}`);
     igWorkerService.releaseWorker(worker);
     return null;
   }
@@ -523,6 +524,9 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
 
     // Detect scraping challenge and auto-dismiss it
     const finalUrl = page.url();
+    if (/\/accounts\/(suspended|login|challenge|scraping_warning)/i.test(finalUrl)) {
+      throw new Error(`bad_session_redirect:${finalUrl}`);
+    }
     if (finalUrl.includes('scraping_warning') || finalUrl.includes('challenge')) {
       console.warn(`[browser] Scraping challenge detected — attempting to dismiss…`);
       try {
@@ -569,6 +573,22 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
     await page.close().catch(() => {});  // keep browser alive, close only the tab
     igWorkerService.releaseWorker(worker);
   }
+}
+
+async function fetchViaBrowserFallback(username, cacheKey = null) {
+  const maxAttempts = igWorkerService.hasWorkers()
+    ? Number(process.env.IG_WORKER_FETCH_ATTEMPTS || 3)
+    : 1;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const result = await fetchViaBrowserFallbackAttempt(username, cacheKey);
+    if (result) return result;
+    if (attempt < maxAttempts) {
+      console.warn(`[browser] Retrying @${username} with another worker (${attempt + 1}/${maxAttempts})`);
+    }
+  }
+
+  return null;
 }
 
 module.exports = { fetchViaBrowserFallback, warmupBrowser };
