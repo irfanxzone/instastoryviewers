@@ -3,8 +3,11 @@ module.exports = {
     {
       name: 'instagram-viewer',
       script: 'src/server.js',
-      instances: 2,
-      exec_mode: 'cluster',
+      // Browser workers hold persistent Chrome profiles and in-memory locks.
+      // Run one Node process per container so one IG account/proxy is not used
+      // concurrently by multiple cluster processes.
+      instances: 1,
+      exec_mode: 'fork',
       max_memory_restart: '500M',
       env: {
         NODE_ENV: 'production',
