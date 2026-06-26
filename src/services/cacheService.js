@@ -89,6 +89,47 @@ function setCache(key, data) {
   saveDisk();
 }
 
+/**
+ * Merge a background result without allowing a poorer response to erase media
+ * already collected by another async path (browser, stories HTTP, API sweep).
+ */
+function setCacheMerged(key, data) {
+  if (!data || !data.success) return;
+
+  const current = memory.get(key) || disk[key];
+  const previous = current?.data;
+  if (!previous?.success) {
+    setCache(key, data);
+    return;
+  }
+
+  const score = value =>
+    (value?.posts?.items?.length || 0) +
+    (value?.reels?.items?.length || 0) +
+    ((value?.stories?.items?.length || 0) * 100) +
+    ((value?.highlights?.items?.length || 0) * 10);
+  const incomingIsRicher = score(data) >= score(previous);
+  const richer = incomingIsRicher ? data : previous;
+  const poorer = incomingIsRicher ? previous : data;
+  const merged = { ...poorer, ...richer };
+  for (const section of ['stories', 'highlights', 'posts', 'reels']) {
+    const oldSection = previous[section];
+    const newSection = data[section];
+    const oldCount = oldSection?.items?.length || 0;
+    const newCount = newSection?.items?.length || 0;
+    merged[section] = newCount >= oldCount ? newSection : oldSection;
+  }
+
+  // Profile API responses can be partial. Keep known fields when the incoming
+  // object omits them, while still accepting corrected IDs and fresh counters.
+  merged.profile = {
+    ...(poorer.profile || {}),
+    ...(richer.profile || {})
+  };
+
+  setCache(key, merged);
+}
+
 function deleteCache(key) {
   memory.delete(key);
   delete disk[key];
@@ -97,4 +138,4 @@ function deleteCache(key) {
 
 loadDisk();
 
-module.exports = { getCache, setCache, deleteCache };
+module.exports = { getCache, setCache, setCacheMerged, deleteCache };

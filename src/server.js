@@ -151,8 +151,9 @@ if (require.main === module) {
     console.log(`[server] NODE_ENV=${process.env.NODE_ENV || 'development'}`);
     console.log(`[server] Browser fallback: ${process.env.ENABLE_BROWSER_FALLBACK === 'true' ? 'enabled' : 'disabled'}`);
 
-    // Pre-warm all session cookies so csrftoken is ready before first request
-    warmAllInBackground();
+    // Legacy session warmup is skipped when fixed IG workers are configured.
+    // Worker sessions are warmed through their own sticky proxy/browser profile.
+    if (!process.env.IG_WORKERS) warmAllInBackground();
 
     if (process.env.ENABLE_BROWSER_FALLBACK === 'true') {
       setTimeout(() => warmupBrowser().catch(() => {}), 2000);

@@ -4,7 +4,8 @@
 .env.*.local
 
 # Chrome browser session data (cookies, passwords, cache)
-.chrome-data/
+.chrome-data*/
+.session-stamp*
 
 # Dependencies
 node_modules/

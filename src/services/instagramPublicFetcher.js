@@ -6,7 +6,7 @@ const { normalizeProfileUser, normalizeMetaOnly } = require('./instagramNormaliz
 const { fetchViaBrowserFallback } = require('./browserFallbackService');
 const { isLoginWallText, isBlockedResponse, NotFoundError } = require('../utils/errors');
 const proxyService = require('./proxyService');
-const { setCache } = require('./cacheService');
+const { setCache, setCacheMerged } = require('./cacheService');
 const sessionService = require('./sessionService');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ function scheduleBrowserFetch(username, cacheKey) {
         // Browser already fetched stories via network interception — only try the HTTP
         // path if the browser came back empty (avoids overwriting good story data with
         // a failed redirect from the server-side HTTP client).
-        if (!result.stories?.items?.length && result.profile?.id && sessionService.hasAnySessions()) {
+        if (!process.env.IG_WORKERS && !result.stories?.items?.length && result.profile?.id && sessionService.hasAnySessions()) {
           try {
             const { normalizeStoryItems } = require('./instagramNormalizer');
             const storyItems = await fetchStoriesServerSide(result.profile.id, username, {});
@@ -50,7 +50,8 @@ function scheduleBrowserFetch(username, cacheKey) {
             }
           } catch {}
         }
-        setCache(cacheKey, result);
+        result.backgroundLoading = false;
+        setCacheMerged(cacheKey, result);
         console.log(`[bg] Browser fetch done @${username}: ${result.posts?.items?.length || 0} posts, ${result.stories?.items?.length || 0} stories`);
       }
     })
@@ -154,7 +155,7 @@ async function fetchStoriesServerSide(userId, username, session) {
       'Referer': `https://www.instagram.com/${username}/`
     };
     for (const url of endpoints) {
-      const res = await get(url, anonHeaders);
+      const res = await get(url, anonHeaders, { maxRedirects: 0 });
       const data = typeof res.data === 'object' ? res.data : tryJsonParse(res.data);
       const items = res.status < 400
         ? (data?.reels_media?.[0]?.items || data?.reels?.[String(userId)]?.items || data?.story?.items || data?.items || [])
@@ -174,13 +175,19 @@ async function fetchStoriesServerSide(userId, username, session) {
     let sessionFailed = false;
     try {
       for (const url of endpoints) {
-        const res = await get(url, buildApiHeaders(username, storySession));
+        const res = await get(url, buildApiHeaders(username, storySession), { maxRedirects: 0 });
         const data = typeof res.data === 'object' ? res.data : tryJsonParse(res.data);
         const items = res.status < 400
           ? (data?.reels_media?.[0]?.items || data?.reels?.[String(userId)]?.items || data?.story?.items || data?.items || [])
           : [];
         console.log(`[stories:session] ${url.split('instagram.com')[1]?.split('?')[0]} → ${res.status}, items=${items.length}`);
-        if ([401, 403, 429].includes(res.status)) { sessionFailed = true; break; }
+        const location = String(res.headers?.location || '');
+        const authRedirect = res.status >= 300 && res.status < 400 &&
+          /accounts\/(login|challenge|scraping_warning)/i.test(location);
+        if ([401, 403, 429].includes(res.status) || authRedirect) {
+          sessionFailed = true;
+          break;
+        }
         if (items.length) return items;
       }
     } catch (e) { console.warn(`[stories:session] request error: ${e.message}`); }
@@ -311,13 +318,13 @@ async function fetchAllPublic(username) {
     partial.backgroundLoading = true;
 
     // Fetch stories server-side — needs profile.id; fall back to web_profile_info when HTML gave null
-    if (sessionService.hasAnySessions()) {
+    if (!process.env.IG_WORKERS && sessionService.hasAnySessions()) {
       const { normalizeStoryItems } = require('./instagramNormalizer');
       const fireStories = (userId) => {
         fetchStoriesServerSide(userId, username, session).then(storyItems => {
           if (storyItems.length) {
             partial.stories = { available: true, items: normalizeStoryItems(storyItems), message: undefined };
-            setCache(cacheKey, partial);
+            setCacheMerged(cacheKey, partial);
           }
         }).catch(() => {});
       };
@@ -343,17 +350,22 @@ async function fetchAllPublic(username) {
     }
 
     // Sweep API endpoints in background — use a warmed session for proper auth
-    sessionService.getFullSessionsForRetry(1).then(pool => {
-      const sweepSession = pool[0]
-        ? { ...session, cookie: pool[0].cookie, csrfToken: pool[0].csrfToken }
-        : session;
-      return sweepEndpoints(username, sweepSession);
-    }).then(apiResult => {
-      if (apiResult && !apiResult.blocked && apiResult.posts?.items?.length > 0) {
-        setCache(cacheKey, apiResult);
-        console.log(`[fetcher] API sweep cached @${username}: ${apiResult.posts.items.length} posts`);
-      }
-    }).catch(() => {});
+    if (!process.env.IG_WORKERS) {
+      sessionService.getFullSessionsForRetry(1).then(pool => {
+        const sweepSession = pool[0]
+          ? { ...session, cookie: pool[0].cookie, csrfToken: pool[0].csrfToken }
+          : session;
+        return sweepEndpoints(username, sweepSession);
+      }).then(apiResult => {
+        if (apiResult && !apiResult.blocked && apiResult.posts?.items?.length > 0) {
+          // The API sweep is often profile-only. Never let it erase stories or
+          // browser batches that completed while this request was in flight.
+          apiResult.backgroundLoading = hasPendingBrowserJob(username);
+          setCacheMerged(cacheKey, apiResult);
+          console.log(`[fetcher] API sweep cached @${username}: ${apiResult.posts.items.length} posts`);
+        }
+      }).catch(() => {});
+    }
 
     return partial;
   }

@@ -16,10 +16,10 @@ function randomUa() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-function buildAxiosConfig(headers, proxyUrl) {
+function buildAxiosConfig(headers, proxyUrl, options = {}) {
   const config = {
     timeout,
-    maxRedirects: 5,
+    maxRedirects: options.maxRedirects ?? 5,
     // Accept 4xx so callers can inspect status; 5xx still throws
     validateStatus: status => status >= 200 && status < 500,
     headers: {
@@ -46,7 +46,7 @@ async function get(url, headers = {}, options = {}) {
     ? options.proxy
     : proxyService.getCurrentProxy();
 
-  const config = buildAxiosConfig(headers, proxyUrl);
+  const config = buildAxiosConfig(headers, proxyUrl, options);
 
   try {
     return await axios.get(url, config);
@@ -55,7 +55,7 @@ async function get(url, headers = {}, options = {}) {
     if (proxyService.hasProxies() && proxyService.shouldRotateOnError(err)) {
       proxyService.rotateProxy();
       const nextProxy = proxyService.getCurrentProxy();
-      const retryConfig = buildAxiosConfig(headers, nextProxy);
+      const retryConfig = buildAxiosConfig(headers, nextProxy, options);
       return axios.get(url, retryConfig);
     }
     throw err;

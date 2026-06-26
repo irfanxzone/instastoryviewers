@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { resolveInstagramInput } = require('../services/inputResolver');
-const { getCache, setCache, deleteCache } = require('../services/cacheService');
+const { getCache, setCacheMerged, deleteCache } = require('../services/cacheService');
 const { fetchAllPublic, hasPendingBrowserJob } = require('../services/instagramPublicFetcher');
 
 const router = express.Router();
@@ -56,7 +56,7 @@ async function resolveAndLoad(rawInput, { forceRefresh = false } = {}) {
   // Stale cache — return immediately and refresh in the background (true SWR)
   if (cached?.stale && !forceRefresh) {
     fetchAllPublic(resolved.username)
-      .then(fresh => setCache(key, fresh))
+      .then(fresh => setCacheMerged(key, fresh))
       .catch(() => {});
     return { data: cached.data, cached };
   }
@@ -64,7 +64,7 @@ async function resolveAndLoad(rawInput, { forceRefresh = false } = {}) {
   // No cache — must wait for a fresh fetch
   try {
     const fresh = await fetchAllPublic(resolved.username);
-    setCache(key, fresh);
+    setCacheMerged(key, fresh);
     return { data: fresh, cached: null };
   } catch (fetchErr) {
     throw fetchErr;

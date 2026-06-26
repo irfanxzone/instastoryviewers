@@ -2,9 +2,10 @@
 
 const fs   = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { normalizeProfileUser, normalizeMetaOnly } = require('./instagramNormalizer');
-const { setCache } = require('./cacheService');
-const proxyService = require('./proxyService');
+const { setCacheMerged } = require('./cacheService');
+const igWorkerService = require('./igWorkerService');
 
 // ─── Chrome detection ─────────────────────────────────────────────────────────
 const DEFAULT_CHROME = [
@@ -29,20 +30,25 @@ const STEALTH = `
   window.chrome={runtime:{},loadTimes:()=>{},csi:()=>{},app:{}};
 `;
 // Each PM2 worker gets its own data dir so they don't fight over Chrome's lock file
-const CHROME_DATA = path.join(process.cwd(), `.chrome-data-${process.pid}`);
+const WORKER_ID = String(process.env.NODE_APP_INSTANCE ?? 'local').replace(/[^\w.-]/g, '_');
+const CHROME_DATA = path.join(process.cwd(), `.chrome-data-worker-${WORKER_ID}`);
+const SESSION_STAMP = path.join(process.cwd(), `.session-stamp-worker-${WORKER_ID}`);
+const WORKER_DATA_ROOT = path.join(process.cwd(), '.chrome-data-ig-workers');
 
 // ─── Persistent browser singleton ────────────────────────────────────────────
 let _pptr = null, _chromePath = null, _browser = null, _launching = null;
+const _workerBrowsers = new Map();
+const _workerLaunches = new Map();
+const _workerProxyAuth = new Map();
 
-function browserReady() { return _browser && _browser.connected; }
+function browserReady(browser = _browser) { return browser && browser.connected; }
 
-function getProxyArgs() {
-  const proxyUrl = proxyService.getCurrentProxy();
+function getProxyArgs(proxyUrl = '') {
   if (!proxyUrl) return { args: [], auth: null };
   try {
     const u = new URL(proxyUrl);
     return {
-      args: [`--proxy-server=${u.hostname}:${u.port}`],
+      args: [`--proxy-server=${u.protocol}//${u.hostname}:${u.port}`],
       auth: u.username ? { username: decodeURIComponent(u.username), password: decodeURIComponent(u.password || '') } : null
     };
   } catch { return { args: [], auth: null }; }
@@ -50,29 +56,93 @@ function getProxyArgs() {
 
 let _proxyAuth = null;
 
+function pruneLegacyChromeData() {
+  const root = process.cwd();
+  const cutoff = Date.now() - (24 * 60 * 60 * 1000);
+  let removed = 0;
+  try {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!/^\.chrome-data-\d+$/.test(entry.name) && !/^\.session-stamp-\d+$/.test(entry.name)) continue;
+      const target = path.join(root, entry.name);
+      if (fs.statSync(target).mtimeMs > cutoff) continue;
+      fs.rmSync(target, { recursive: true, force: true });
+      removed++;
+    }
+  } catch (err) {
+    console.warn('[browser] Could not prune legacy Chrome data:', err.message);
+  }
+  if (removed) console.log(`[browser] Removed ${removed} stale PID-based Chrome artifacts`);
+}
+
 // Wipe chrome data when INSTAGRAM_SESSION_ID changes so stale login state can't persist
 function clearChromeDataIfSessionChanged() {
-  const stamp = (process.env.INSTAGRAM_SESSION_ID || '').slice(0, 24);
+  const sessionConfig = [
+    process.env.IG_WORKERS || '',
+    process.env.INSTAGRAM_SESSION_IDS || '',
+    process.env.INSTAGRAM_STORY_SESSION_ID || '',
+    process.env.INSTAGRAM_SESSION_ID || ''
+  ].join('|');
+  const stamp = sessionConfig
+    ? crypto.createHash('sha256').update(sessionConfig).digest('hex').slice(0, 24)
+    : '';
   if (!stamp) return;
-  const stampFile = path.join(process.cwd(), `.session-stamp-${process.pid}`);
   let stored = '';
-  try { stored = fs.readFileSync(stampFile, 'utf8').trim(); } catch {}
+  try { stored = fs.readFileSync(SESSION_STAMP, 'utf8').trim(); } catch {}
   if (stamp !== stored) {
     try { fs.rmSync(CHROME_DATA, { recursive: true, force: true }); } catch {}
-    try { fs.writeFileSync(stampFile, stamp); } catch {}
+    try { fs.writeFileSync(SESSION_STAMP, stamp); } catch {}
     console.log('[browser] Session changed — cleared .chrome-data for fresh login');
   }
 }
 
-async function getBrowser() {
-  if (browserReady()) return _browser;
-  if (_launching) return _launching;
+function workerChromeData(worker) {
+  if (!worker) return CHROME_DATA;
+  return path.join(WORKER_DATA_ROOT, worker.id);
+}
+
+function workerSessionStamp(worker) {
+  if (!worker) return SESSION_STAMP;
+  return path.join(WORKER_DATA_ROOT, `${worker.id}.session-stamp`);
+}
+
+function clearWorkerChromeDataIfSessionChanged(worker) {
+  if (!worker) return;
+  const stamp = crypto
+    .createHash('sha256')
+    .update(`${worker.id}|${worker.sessionId}|${worker.proxyUrl}`)
+    .digest('hex')
+    .slice(0, 24);
+  const stampFile = workerSessionStamp(worker);
+  let stored = '';
+  try { stored = fs.readFileSync(stampFile, 'utf8').trim(); } catch {}
+  if (stamp !== stored) {
+    try { fs.rmSync(workerChromeData(worker), { recursive: true, force: true }); } catch {}
+    try { fs.mkdirSync(WORKER_DATA_ROOT, { recursive: true }); } catch {}
+    try { fs.writeFileSync(stampFile, stamp); } catch {}
+    console.log(`[browser] ${worker.id} session/proxy changed - cleared worker Chrome profile`);
+  }
+}
+
+async function getBrowser(worker = null) {
+  if (!worker) {
+    if (browserReady()) return _browser;
+    if (_launching) return _launching;
+  } else {
+    const existing = _workerBrowsers.get(worker.id);
+    if (browserReady(existing)) return existing;
+    const launching = _workerLaunches.get(worker.id);
+    if (launching) return launching;
+    clearWorkerChromeDataIfSessionChanged(worker);
+  }
   console.log('[browser] Launching persistent Chrome…');
-  const { args: proxyArgs, auth } = getProxyArgs();
+  const label = worker ? worker.id : 'legacy';
+  const dataDir = worker ? workerChromeData(worker) : CHROME_DATA;
+  const { args: proxyArgs, auth } = getProxyArgs(worker?.proxyUrl || '');
   _proxyAuth = auth;
-  if (proxyArgs.length) console.log('[browser] Using proxy for Chrome');
-  _launching = _pptr.launch({
-    headless: true, executablePath: _chromePath, userDataDir: CHROME_DATA,
+  if (worker) _workerProxyAuth.set(worker.id, auth);
+  if (proxyArgs.length) console.log(`[browser] Using fixed proxy for ${label}`);
+  const launchPromise = _pptr.launch({
+    headless: true, executablePath: _chromePath, userDataDir: dataDir,
     args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage',
            '--disable-blink-features=AutomationControlled',
            '--disable-features=IsolateOrigins,site-per-process',
@@ -80,18 +150,31 @@ async function getBrowser() {
            ...proxyArgs],
     ignoreDefaultArgs: ['--enable-automation'], timeout: 30000
   }).then(b => {
-    _browser = b; _launching = null;
+    if (worker) {
+      _workerBrowsers.set(worker.id, b);
+      _workerLaunches.delete(worker.id);
+    } else {
+      _browser = b;
+      _launching = null;
+    }
     b.on('disconnected', () => { _browser = null; console.log('[browser] Chrome disconnected — will relaunch'); });
-    console.log('[browser] Chrome ready (persistent)');
+    console.log(`[browser] Chrome ready for ${label}`);
     return b;
-  }).catch(err => { _launching = null; throw err; });
-  return _launching;
+  }).catch(err => {
+    if (worker) _workerLaunches.delete(worker.id);
+    else _launching = null;
+    throw err;
+  });
+  if (worker) _workerLaunches.set(worker.id, launchPromise);
+  else _launching = launchPromise;
+  return launchPromise;
 }
 
-async function openPage() {
-  const b = await getBrowser();
+async function openPage(worker = null) {
+  const b = await getBrowser(worker);
   const page = await b.newPage();
-  if (_proxyAuth) await page.authenticate(_proxyAuth);
+  const auth = worker ? _workerProxyAuth.get(worker.id) : _proxyAuth;
+  if (auth) await page.authenticate(auth);
   await page.evaluateOnNewDocument(STEALTH);
   await page.setUserAgent(UA);
   await page.setViewport({ width: 1440, height: 900 });
@@ -102,22 +185,31 @@ async function openPage() {
 // ─── Warmup ───────────────────────────────────────────────────────────────────
 async function warmupBrowser() {
   if (process.env.ENABLE_BROWSER_FALLBACK !== 'true') return;
+  pruneLegacyChromeData();
   clearChromeDataIfSessionChanged();
   try { _pptr = require('puppeteer-core'); } catch { console.warn('[browser] puppeteer-core not installed'); return; }
   _chromePath = findChrome();
   if (!_chromePath) { console.warn('[browser] Chrome not found — set CHROME_EXECUTABLE_PATH in .env'); return; }
+  const warmWorker = igWorkerService.hasWorkers()
+    ? await igWorkerService.acquireWorker('pre-warm')
+    : null;
   try {
-    const page = await openPage();
+    const page = await openPage(warmWorker);
     // Inject session on warmup so cookies are stored in the persistent profile
-    const sessionId = pickSession();
+    const sessionId = warmWorker?.sessionId || pickSession();
     if (sessionId) {
-      await page.setCookie({ name: 'sessionid', value: sessionId, domain: '.instagram.com', path: '/', httpOnly: true, secure: true });
+      const dsUserId = sessionId.split(':')[0] || '';
+      await page.setCookie(
+        { name: 'sessionid', value: sessionId, domain: '.instagram.com', path: '/', httpOnly: true, secure: true },
+        ...(dsUserId ? [{ name: 'ds_user_id', value: dsUserId, domain: '.instagram.com', path: '/', secure: true }] : [])
+      );
       console.log('[browser] Session cookie injected during pre-warm');
     }
     await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
     await page.close();
     console.log('[browser] Pre-warm complete — ready for requests ✓');
   } catch (err) { console.warn('[browser] Pre-warm error:', err.message); }
+  finally { igWorkerService.releaseWorker(warmWorker); }
 }
 
 // ─── Helper — builds a synthetic user object from accumulated batches ─────────
@@ -233,8 +325,9 @@ const IN_PAGE_SCRIPT = async function(username) {
   let nextMaxId = hasCursor ? initCursor : null;
   let moreAvail = true;   // always try — API returns empty items when truly done
   let pageNum   = 0;
+  let loadedPostCount = embeddedEdges.length;
 
-  while (moreAvail && pageNum < 50) {
+  while (moreAvail && pageNum < 12 && loadedPostCount < 120) {
     pageNum++;
     const url = nextMaxId
       ? `/api/v1/feed/user/${uid}/?count=12&max_id=${encodeURIComponent(nextMaxId)}`
@@ -243,12 +336,14 @@ const IN_PAGE_SCRIPT = async function(username) {
     if (!feed?.items?.length) break;   // API says no more → stop
 
     // Skip duplicates that were already in the embedded batch
-    const newItems = (pageNum === 1 && !hasCursor && seenIds.size > 0)
+    let newItems = (pageNum === 1 && !hasCursor && seenIds.size > 0)
       ? feed.items.filter(i => !seenIds.has(i.id))
       : feed.items;
+    newItems = newItems.slice(0, Math.max(0, 120 - loadedPostCount));
 
     if (newItems.length) {
       await window.igBatch({ type: 'posts', items: newItems, totalCount: totalPosts, moreAvail: !!feed.more_available });
+      loadedPostCount += newItems.length;
     }
     nextMaxId = feed.next_max_id;
     moreAvail = !!feed.more_available;   // API controls whether to continue
@@ -261,17 +356,22 @@ const IN_PAGE_SCRIPT = async function(username) {
     await window.igBatch({ type: 'reels', items: initReels, moreAvail: true });
   }
   let reelMaxId     = user.edge_felix_video_timeline?.page_info?.end_cursor;
-  let reelMoreAvail = user.edge_felix_video_timeline?.page_info?.has_next_page;
+  let reelMoreAvail = true;
   let reelPage      = 0;
+  let loadedReelCount = initReels.length;
 
-  while (reelMoreAvail && reelMaxId && reelPage < 15) {
+  while (reelMoreAvail && reelPage < 10 && loadedReelCount < 120) {
     reelPage++;
-    const feed = await GET(`/api/v1/clips/user/?user_id=${uid}&max_id=${encodeURIComponent(reelMaxId)}&count=12`);
+    const reelUrl = reelMaxId
+      ? `/api/v1/clips/user/?user_id=${uid}&max_id=${encodeURIComponent(reelMaxId)}&count=12`
+      : `/api/v1/clips/user/?user_id=${uid}&count=12`;
+    const feed = await GET(reelUrl);
     if (!feed?.items?.length) break;
-    const items = feed.items.map(i => i.media || i);
+    const items = feed.items.map(i => i.media || i).slice(0, Math.max(0, 120 - loadedReelCount));
     await window.igBatch({ type: 'reels', items, moreAvail: !!feed.paging_info?.more_available });
+    loadedReelCount += items.length;
     reelMaxId     = feed.paging_info?.max_id;
-    reelMoreAvail = feed.paging_info?.more_available;
+    reelMoreAvail = !!feed.paging_info?.more_available && !!reelMaxId;
   }
 
   // ── Highlights ────────────────────────────────────────────────────────────
@@ -322,9 +422,18 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
     if (!_chromePath) { console.warn('[browser] Chrome not found'); return null; }
   }
 
+  const worker = igWorkerService.hasWorkers()
+    ? await igWorkerService.acquireWorker(`@${username}`)
+    : null;
+  if (igWorkerService.hasWorkers() && !worker) return null;
+
   let page;
-  try { page = await openPage(); }
-  catch (err) { console.warn('[browser] Could not open page:', err.message); return null; }
+  try { page = await openPage(worker); }
+  catch (err) {
+    console.warn('[browser] Could not open page:', err.message);
+    igWorkerService.releaseWorker(worker);
+    return null;
+  }
 
   // Surface console.log calls from the in-page script (story diagnostics tagged [ig-story])
   page.on('console', msg => {
@@ -383,7 +492,7 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
               reelsLoaded: accReels.length
             };
           }
-          setCache(cacheKey, result);
+          setCacheMerged(cacheKey, result);
           if (accPosts.length > 12) {
             console.log(`[browser] Cache updated: ${accPosts.length}/${totalCount || '?'} posts, ${accReels.length} reels`);
           }
@@ -393,14 +502,17 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
 
     // Inject session cookie from pool — unlocks stories, highlights and richer data.
     // Rotates through the 8-session pool so no single account gets hammered.
-    const sessionId = pickSession();
-    const dsUserId  = process.env.INSTAGRAM_DS_USER_ID || '';
+    const sessionId = worker?.sessionId || pickSession();
+    const dsUserId = worker?.dsUserId || sessionId?.split(':')[0] || '';
     if (sessionId) {
+      const existing = await page.cookies('https://www.instagram.com/').catch(() => []);
+      if (existing.length) await page.deleteCookie(...existing).catch(() => {});
       const cookies = [
         { name: 'sessionid',  value: sessionId, domain: '.instagram.com', path: '/', httpOnly: true,  secure: true },
         { name: 'ds_user_id', value: dsUserId,  domain: '.instagram.com', path: '/', httpOnly: false, secure: true }
       ].filter(c => c.value);
       await page.setCookie(...cookies);
+      if (worker) console.log(`[browser] Worker ${worker.id} owns @${username} for this fetch`);
       console.log(`[browser] Session injected for @${username} (…${sessionId.slice(-8)})`);
     }
 
@@ -451,9 +563,11 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
 
   } catch (err) {
     console.warn(`[browser] Error @${username}: ${err.message}`);
+    igWorkerService.markWorkerFailed(worker, err.message);
     return null;
   } finally {
     await page.close().catch(() => {});  // keep browser alive, close only the tab
+    igWorkerService.releaseWorker(worker);
   }
 }
 
