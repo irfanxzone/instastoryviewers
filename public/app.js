@@ -35,12 +35,12 @@ function skeletonGrid(n = 9) {
 function storyDots() {
   return `<div class="story-dots-wrap">
     <div class="story-dots">${Array.from({length:11},(_,i)=>`<span class="story-dot" style="animation-delay:${i*.1}s"></span>`).join('')}</div>
-    <p class="story-dots-label">Checking for active stories in the last 24 h…</p>
+    <p class="story-dots-label">Aktive Stories der letzten 24 Stunden werden geprueft...</p>
   </div>`;
 }
 
 // ─── Loading animation ────────────────────────────────────────────────────────
-const STEPS = ['Opening Instagram…','Loading @{u}…','Fetching public data…','Applying results…'];
+const STEPS = ['Instagram wird geoeffnet...','@{u} wird geladen...','Stories, Beitraege und Reels werden abgerufen...','Ergebnisse werden vorbereitet...'];
 let loadTimer = null, stepIdx = 0, _searchUsername = '';
 
 function startLoading(username) {
@@ -71,7 +71,7 @@ function buildModal() {
   const media = isVid && item.videoUrl
     ? `<video class="modal-media" src="${esc(item.videoUrl)}" controls autoplay muted playsinline loop></video>`
     : src ? `<img class="modal-media" src="${esc(src)}" alt="media" referrerpolicy="no-referrer" />`
-           : `<div class="modal-media modal-placeholder">No preview</div>`;
+           : `<div class="modal-media modal-placeholder">Keine Vorschau</div>`;
   const dlUrl = item.videoUrl || item.displayUrl || item.thumbnail || '';
   const igUrl = item.url || '';
   const m = document.createElement('div');
@@ -84,8 +84,8 @@ function buildModal() {
         ${media}
         ${item.caption ? `<p class="modal-caption">${esc(item.caption)}</p>` : ''}
         <div class="modal-actions">
-          ${dlUrl ? `<a class="modal-btn" href="${esc(dlUrl)}" download target="_blank" rel="noopener">⬇ Download</a>` : ''}
-          ${igUrl ? `<a class="modal-btn modal-btn-outline" href="${esc(igUrl)}" target="_blank" rel="noopener">Open on Instagram ↗</a>` : ''}
+          ${dlUrl ? `<a class="modal-btn" href="${esc(dlUrl)}" download target="_blank" rel="noopener">⬇ Herunterladen</a>` : ''}
+          ${igUrl ? `<a class="modal-btn modal-btn-outline" href="${esc(igUrl)}" target="_blank" rel="noopener">Auf Instagram oeffnen ↗</a>` : ''}
         </div>
         <div class="modal-counter">${mIdx+1} / ${mItems.length}</div>
       </div>
@@ -113,8 +113,8 @@ let _renderedUsername = null;
 function renderProfileHead(data) {
   const p = data.profile || {};
   _renderedUsername = p.username;
-  const verBadge  = p.isVerified ? '<span class="badge ok">✓ Verified</span>' : '';
-  const privBadge = p.isPrivate  ? '<span class="badge warn">🔒 Private</span>' : '';
+  const verBadge  = p.isVerified ? '<span class="badge ok">✓ Verifiziert</span>' : '';
+  const privBadge = p.isPrivate  ? '<span class="badge warn">🔒 Privat</span>' : '';
 
   document.getElementById('ig-profile-head')?.remove();
   const head = document.createElement('div');
@@ -125,20 +125,20 @@ function renderProfileHead(data) {
         <img class="avatar" src="${esc(p.avatar)||BLANK}" alt="${esc(p.username)}" referrerpolicy="no-referrer" onerror="this.src='${BLANK}'" />
       </div>
       <div class="profile-main">
-        <h2>${esc(p.fullName || p.username || 'Instagram profile')}</h2>
+        <h2>${esc(p.fullName || p.username || 'Instagram Profil')}</h2>
         <div class="username-line"><span class="at-sign">@</span>${esc(p.username || '')}</div>
         <div class="badge-row">${verBadge}${privBadge}</div>
         ${p.bio ? `<p class="bio">${esc(p.bio)}</p>` : ''}
         ${p.category ? `<div class="profile-category">${esc(p.category)}</div>` : ''}
         <div class="action-row">
-          ${p.instagramUrl ? `<a class="small-link" target="_blank" rel="noopener" href="${esc(p.instagramUrl)}">View on Instagram</a>` : ''}
+          ${p.instagramUrl ? `<a class="small-link" target="_blank" rel="noopener" href="${esc(p.instagramUrl)}">Auf Instagram ansehen</a>` : ''}
           ${p.externalUrl  ? `<a class="small-link light" target="_blank" rel="noopener" href="${esc(p.externalUrl)}">${esc(p.externalUrl.replace(/^https?:\/\//,'').slice(0,36))}</a>` : ''}
         </div>
       </div>
       <div class="stats">
-        <div class="stat"><strong>${esc(String(p.postsCountText||p.postsCount||'—'))}</strong><span>Posts</span></div>
-        <div class="stat"><strong>${esc(String(p.followersText||p.followers||'—'))}</strong><span>Followers</span></div>
-        <div class="stat"><strong>${esc(String(p.followingText||p.following||'—'))}</strong><span>Following</span></div>
+        <div class="stat"><strong>${esc(String(p.postsCountText||p.postsCount||'—'))}</strong><span>Beitraege</span></div>
+        <div class="stat"><strong>${esc(String(p.followersText||p.followers||'—'))}</strong><span>Follower</span></div>
+        <div class="stat"><strong>${esc(String(p.followingText||p.following||'—'))}</strong><span>Folgt</span></div>
       </div>
     </div>`;
   resultShell.insertBefore(head, resultShell.firstChild);
@@ -151,14 +151,14 @@ function renderTabsShell() {
   tabs.id = 'ig-tabs';
   tabs.innerHTML = `
     <div class="tabs" role="tablist">
-      <button class="tab active" data-panel="posts"      role="tab">Posts</button>
+      <button class="tab active" data-panel="stories"    role="tab">Stories</button>
+      <button class="tab"        data-panel="posts"      role="tab">Beitraege</button>
       <button class="tab"        data-panel="reels"      role="tab">Reels</button>
-      <button class="tab"        data-panel="stories"    role="tab">Stories</button>
       <button class="tab"        data-panel="highlights" role="tab">Highlights</button>
     </div>
-    <div class="panel active" id="panel-posts"></div>
+    <div class="panel active" id="panel-stories"></div>
+    <div class="panel"        id="panel-posts"></div>
     <div class="panel"        id="panel-reels"></div>
-    <div class="panel"        id="panel-stories"></div>
     <div class="panel"        id="panel-highlights"></div>`;
   resultShell.appendChild(tabs);
 
@@ -176,7 +176,7 @@ function renderTabsShell() {
 function updateTabLabel(panelKey, items) {
   const tab = document.querySelector(`.tab[data-panel="${panelKey}"]`);
   if (!tab) return;
-  const LABELS = { posts:'Posts', reels:'Reels', stories:'Stories', highlights:'Highlights' };
+  const LABELS = { posts:'Beitraege', reels:'Reels', stories:'Stories', highlights:'Highlights' };
   const label  = LABELS[panelKey] || panelKey;
   tab.innerHTML = items?.length ? `${label} <span class="tab-count">${items.length}</span>` : label;
 }
@@ -206,18 +206,27 @@ function showSkeletons() {
   document.getElementById('panel-highlights')?.replaceChildren(...[document.createRange().createContextualFragment(skeletonGrid(6))]);
 }
 
+function germanEmptyMessage(msg, label) {
+  const text = String(msg || '').toLowerCase();
+  if (text.includes('private')) return 'Dieses Profil ist privat. Private Inhalte koennen nicht angezeigt werden.';
+  if (text.includes('24') || text.includes('active stories')) return 'Keine aktiven Stories in den letzten 24 Stunden gefunden.';
+  if (text.includes('could not') || text.includes('right now')) return 'Medien konnten gerade nicht geladen werden. Bitte versuche es gleich erneut.';
+  return `Keine ${label.toLowerCase()} fuer dieses Profil gefunden.`;
+}
+
 // ─── Render collection ────────────────────────────────────────────────────────
 function renderCollection(col, label, key) {
   const items = col?.items || [];
   const msg   = col?.message || '';
   if (!items.length) {
     const icon = msg.includes('private') ? '🔒' : msg.includes('24') ? '⭕' : '📭';
-    return `<div class="empty-state"><div style="font-size:38px;margin-bottom:8px">${icon}</div><strong>No ${esc(label)}</strong><p>${esc(msg||`No ${label.toLowerCase()} found for this profile.`)}</p></div>`;
+    return `<div class="empty-state"><div style="font-size:38px;margin-bottom:8px">${icon}</div><strong>Keine ${esc(label)}</strong><p>${esc(germanEmptyMessage(msg, label))}</p></div>`;
   }
   return `<div class="media-grid">${items.map((item,i) => mediaCard(item,i,key)).join('')}</div>`;
 }
 
 const TICON = { image:'📷', video:'🎬', carousel:'🖼', reel:'🎥', story:'⭕', highlight:'⭐' };
+const TYPE_LABELS = { image:'Foto', video:'Video', carousel:'Karussell', reel:'Reel', story:'Story', highlight:'Highlight' };
 function mediaCard(item, idx, key) {
   const thumb = item.thumbnail || item.displayUrl || '';
   const isVid = item.type==='video'||item.type==='reel';
@@ -225,19 +234,19 @@ function mediaCard(item, idx, key) {
   const dlUrl = item.videoUrl||item.displayUrl||item.thumbnail||'';
   const igUrl = item.url||'';
   return `
-    <article class="media-card" data-index="${idx}" data-collection="${esc(key)}" title="Click to view">
+    <article class="media-card" data-index="${idx}" data-collection="${esc(key)}" title="Zum Ansehen klicken">
       <div class="thumb-wrap">
         ${thumb ? `<img class="media-thumb" src="${esc(thumb)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.classList.add('thumb-err')" alt="" />` : `<div class="media-thumb"></div>`}
         ${isVid ? '<div class="play-badge">▶</div>' : ''}
       </div>
       <div class="media-body">
         <div class="media-meta">
-          <span>${TICON[item.type]||'📷'} ${esc(item.type||'photo')}</span>
+          <span>${TICON[item.type]||'📷'} ${esc(TYPE_LABELS[item.type] || 'Foto')}</span>
           ${likes>0 ? `<span>♥ ${likes.toLocaleString()}</span>` : ''}
         </div>
         ${item.caption ? `<p class="media-caption">${esc(item.caption)}</p>` : ''}
         <div class="card-actions">
-          ${dlUrl ? `<a class="card-btn card-btn-dl" href="${esc(dlUrl)}" download target="_blank" rel="noopener">⬇</a>` : ''}
+          ${dlUrl ? `<a class="card-btn card-btn-dl" href="${esc(dlUrl)}" download target="_blank" rel="noopener">Herunterladen</a>` : ''}
           ${igUrl ? `<a class="card-btn card-btn-ig" href="${esc(igUrl)}" target="_blank" rel="noopener">↗</a>` : ''}
         </div>
       </div>
@@ -258,7 +267,7 @@ function renderProfile(data, isUpdate = false) {
     if (data.backgroundLoading) {
       showSkeletons();
     } else {
-      fillPanel('posts',      data.posts,      'Posts');
+      fillPanel('posts',      data.posts,      'Beitraege');
       fillPanel('reels',      data.reels,      'Reels');
       fillPanel('stories',    data.stories,    'Stories');
       fillPanel('highlights', data.highlights, 'Highlights');
@@ -266,7 +275,7 @@ function renderProfile(data, isUpdate = false) {
   } else {
     // Smooth update — only replace panel contents, profile head stays
     renderProfileHead(data);  // refresh stats (postsCount may have updated)
-    fillPanel('posts',      data.posts,      'Posts');
+    fillPanel('posts',      data.posts,      'Beitraege');
     fillPanel('reels',      data.reels,      'Reels');
     fillPanel('stories',    data.stories,    'Stories');
     fillPanel('highlights', data.highlights, 'Highlights');
@@ -277,15 +286,15 @@ function renderProfile(data, isUpdate = false) {
 function showError(msg) {
   stopLoading();
   resultsSection.hidden = false;
-  resultShell.innerHTML = `<div class="panel active"><div class="error-box"><strong>Could not load profile</strong><br>${esc(msg)}</div></div>`;
-  setStatus('Search failed.');
+  resultShell.innerHTML = `<div class="panel active"><div class="error-box"><strong>Profil konnte nicht geladen werden</strong><br>${esc(msg)}</div></div>`;
+  setStatus('Suche fehlgeschlagen.');
 }
 
 // ─── Two-phase search ─────────────────────────────────────────────────────────
 let _currentUser = '';
 async function runSearch(raw) {
   const value = raw.trim();
-  if (!value) { setStatus('Enter a username or Instagram link.'); return; }
+  if (!value) { setStatus('Bitte gib einen Benutzernamen oder Instagram-Link ein.'); return; }
   searchBtn.disabled = true;
 
   try {
@@ -293,20 +302,20 @@ async function runSearch(raw) {
     startLoading(value);
     const r1 = await fetch(`/api/ig/all/${encodeURIComponent(value)}`);
     const d1  = await r1.json();
-    if (!r1.ok || !d1.success) throw new Error(d1.error || 'Could not load Instagram data.');
+    if (!r1.ok || !d1.success) throw new Error(d1.error || 'Instagram-Daten konnten nicht geladen werden.');
 
     const username = d1.profile?.username || value.trim().replace(/^@/, '');
     _currentUser = username;
-    setStatus(`Loading @${username}…`);
+    setStatus(`@${username} wird geladen...`);
 
     renderProfile(d1);
 
     if (d1.backgroundLoading) {
-      setStatus(`@${username} profile loaded — fetching posts & media…`);
+      setStatus(`@${username} Profil geladen - Stories, Beitraege und Reels werden abgerufen...`);
       pollForMedia(username, 3000);  // start polling every 3s immediately
     } else {
       const n = d1.posts?.items?.length || 0;
-      setStatus(n > 0 ? `${n} posts loaded.` : 'Profile loaded.');
+      setStatus(n > 0 ? `${n} Beitraege geladen.` : 'Profil geladen.');
     }
 
   } catch (err) {
@@ -346,9 +355,9 @@ function pollForMedia(username, delay) {
         // Show live progress while paginating
         const prog = d.loadingProgress;
         if (prog?.postsTotal > 0) {
-          setStatus(`Loading posts… ${prog.postsLoaded} of ${prog.postsTotal}`);
+          setStatus(`Beitraege werden geladen... ${prog.postsLoaded} von ${prog.postsTotal}`);
         } else {
-          setStatus(`Fetching posts & reels for @${username}…`);
+          setStatus(`Beitraege und Reels fuer @${username} werden geladen...`);
         }
         // Poll every 3s while loading — fast enough to feel live
         pollForMedia(username, 3000);
@@ -357,10 +366,10 @@ function pollForMedia(username, delay) {
         const reels  = d.reels?.items?.length  || 0;
         const stories = d.stories?.items?.length || 0;
         const parts  = [];
-        if (posts)   parts.push(`${posts} posts`);
-        if (reels)   parts.push(`${reels} reels`);
-        if (stories) parts.push(`${stories} stories`);
-        setStatus(parts.length ? `${parts.join(', ')} loaded.` : 'Profile loaded.');
+        if (posts)   parts.push(`${posts} Beitraege`);
+        if (reels)   parts.push(`${reels} Reels`);
+        if (stories) parts.push(`${stories} Stories`);
+        setStatus(parts.length ? `${parts.join(', ')} geladen.` : 'Profil geladen.');
       }
     } catch {
       // Silently retry
