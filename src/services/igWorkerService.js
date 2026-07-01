@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const FAILURE_COOLDOWN_MS = Number(process.env.IG_WORKER_FAILURE_COOLDOWN_MS || 10 * 60 * 1000);
 const ACQUIRE_TIMEOUT_MS = Number(process.env.IG_WORKER_ACQUIRE_TIMEOUT_MS || 45 * 1000);
 const ACQUIRE_POLL_MS = 500;
+const PREFERRED_WORKER_INDEX = Math.max(0, Number(process.env.IG_WORKER_PREFERRED_INDEX || 2) - 1);
 
 let workers = [];
 let cursor = 0;
@@ -95,14 +96,21 @@ function isHealthy(worker) {
   return worker && Date.now() >= worker.failedUntil;
 }
 
-function pickAvailableWorker() {
+function pickAvailableWorker(excludedIds = new Set()) {
   const now = Date.now();
-  const available = workers.filter(w => !w.busy && now >= w.failedUntil);
+  const excluded = excludedIds instanceof Set ? excludedIds : new Set(excludedIds || []);
+  const available = workers.filter(w => !excluded.has(w.id) && !w.busy && now >= w.failedUntil);
   if (!available.length) return null;
+
+  const preferred = workers[PREFERRED_WORKER_INDEX];
+  if (preferred && !excluded.has(preferred.id) && !preferred.busy && now >= preferred.failedUntil) {
+    cursor = (preferred.index + 1) % workers.length;
+    return preferred;
+  }
 
   for (let i = 0; i < workers.length; i++) {
     const candidate = workers[(cursor + i) % workers.length];
-    if (!candidate.busy && now >= candidate.failedUntil) {
+    if (!excluded.has(candidate.id) && !candidate.busy && now >= candidate.failedUntil) {
       cursor = (candidate.index + 1) % workers.length;
       return candidate;
     }
@@ -111,12 +119,12 @@ function pickAvailableWorker() {
   return available[0];
 }
 
-async function acquireWorker(reason = 'request') {
+async function acquireWorker(reason = 'request', excludedIds = new Set()) {
   if (!workers.length) return null;
   const started = Date.now();
 
   while (Date.now() - started < ACQUIRE_TIMEOUT_MS) {
-    const worker = pickAvailableWorker();
+    const worker = pickAvailableWorker(excludedIds);
     if (worker) {
       worker.busy = true;
       worker.jobs++;

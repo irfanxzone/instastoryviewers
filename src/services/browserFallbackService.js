@@ -409,7 +409,7 @@ function pickSession() {
 }
 
 // ─── Main fallback function ───────────────────────────────────────────────────
-async function fetchViaBrowserFallbackAttempt(username, cacheKey = null) {
+async function fetchViaBrowserFallbackAttempt(username, cacheKey = null, triedWorkerIds = null) {
   if (process.env.ENABLE_BROWSER_FALLBACK !== 'true') return null;
 
   // Self-initialize if warmup never ran (e.g. warmup failed on startup)
@@ -423,9 +423,10 @@ async function fetchViaBrowserFallbackAttempt(username, cacheKey = null) {
   }
 
   const worker = igWorkerService.hasWorkers()
-    ? await igWorkerService.acquireWorker(`@${username}`)
+    ? await igWorkerService.acquireWorker(`@${username}`, triedWorkerIds)
     : null;
   if (igWorkerService.hasWorkers() && !worker) return null;
+  if (worker && triedWorkerIds instanceof Set) triedWorkerIds.add(worker.id);
 
   let page;
   try { page = await openPage(worker); }
@@ -579,16 +580,37 @@ async function fetchViaBrowserFallback(username, cacheKey = null) {
   const maxAttempts = igWorkerService.hasWorkers()
     ? Number(process.env.IG_WORKER_FETCH_ATTEMPTS || 3)
     : 1;
+  const triedWorkerIds = new Set();
+  let bestZeroStoryResult = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const result = await fetchViaBrowserFallbackAttempt(username, cacheKey);
-    if (result) return result;
+    const result = await fetchViaBrowserFallbackAttempt(username, cacheKey, triedWorkerIds);
+    if (result) {
+      const storyCount = result.stories?.items?.length || 0;
+      const mediaCount = (result.posts?.items?.length || 0) + (result.reels?.items?.length || 0);
+      const hasProfile = !!result.profile?.username;
+
+      if (storyCount > 0 || !igWorkerService.hasWorkers()) return result;
+
+      // Instagram sometimes returns 200 OK with an empty stories payload for one
+      // session, while another healthy session can see the stories. Treat zero
+      // stories as inconclusive when the profile/media loaded successfully.
+      if (hasProfile || mediaCount > 0) {
+        bestZeroStoryResult ||= result;
+        if (attempt < maxAttempts) {
+          console.warn(`[browser] @${username} returned 0 stories; trying another worker (${attempt + 1}/${maxAttempts})`);
+          continue;
+        }
+      }
+
+      return result;
+    }
     if (attempt < maxAttempts) {
       console.warn(`[browser] Retrying @${username} with another worker (${attempt + 1}/${maxAttempts})`);
     }
   }
 
-  return null;
+  return bestZeroStoryResult;
 }
 
 module.exports = { fetchViaBrowserFallback, warmupBrowser };
