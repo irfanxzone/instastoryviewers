@@ -40,9 +40,8 @@ section{padding:64px 0}.section-title{text-align:center;margin-bottom:38px}.sect
 .step p{margin:0;color:#626879;font-size:13.5px;line-height:1.7}
 
 .article{max-width:900px;margin:0 auto}.article h2{font-size:34px;line-height:1.25;margin:0 0 14px}.article h3{font-size:23px;margin:28px 0 10px}.article p{color:#686b76;margin:0 0 16px}.note{background:#faf7ff;border-left:4px solid #c13584;border-radius:12px;padding:20px;margin:22px 0;color:#50535f}
-.arrow-heading{display:flex;align-items:center;gap:12px}
-.arrow-heading::before{content:"➜";flex:0 0 auto;color:#c13584;font-size:.86em;line-height:1;text-shadow:0 8px 18px rgba(193,53,132,.22)}
-.section-title .arrow-heading{justify-content:center}
+.arrow-heading{display:block;border-left:5px solid #c13584;padding-left:14px}
+.arrow-heading::before{content:none}
 
 /* ── FAQ smooth ── */
 .faq{max-width:900px;margin:0 auto}
