@@ -14,7 +14,7 @@ const searchBtn      = document.getElementById('searchBtn');
 if (menuBtn) menuBtn.addEventListener('click', () => mobileMenu.classList.toggle('open'));
 
 function esc(v) {
-  return String(v  '').replace(/[&<>'"]/g,
+  return String(v ?? '').replace(/[&<>'"]/g,
     c => ({ '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;' }[c]));
 }
 function setStatus(msg) { if (statusEl) { statusEl.textContent = msg || ''; } }
@@ -64,13 +64,13 @@ function stopLoading() { if (loadTimer) { clearInterval(loadTimer); loadTimer = 
 let mItems = [], mIdx = 0;
 function openModal(items, idx) { mItems = items; mIdx = idx; buildModal(); }
 function buildModal() {
-  document.getElementById('igModal').remove();
+  document.getElementById('igModal')?.remove();
   const item = mItems[mIdx]; if (!item) return;
   const isVid = item.type === 'video' || item.type === 'reel' || item.type === 'story';
   const src   = item.videoUrl || item.displayUrl || item.thumbnail || '';
   const media = isVid && item.videoUrl
-     `<video class="modal-media" src="${esc(item.videoUrl)}" controls autoplay muted playsinline loop></video>`
-    : src  `<img class="modal-media" src="${esc(src)}" alt="media" referrerpolicy="no-referrer" />`
+    ? `<video class="modal-media" src="${esc(item.videoUrl)}" controls autoplay muted playsinline loop></video>`
+    : src ? `<img class="modal-media" src="${esc(src)}" alt="media" referrerpolicy="no-referrer" />`
            : `<div class="modal-media modal-placeholder">Keine Vorschau</div>`;
   const dlUrl = item.videoUrl || item.displayUrl || item.thumbnail || '';
   const igUrl = item.url || '';
@@ -79,22 +79,22 @@ function buildModal() {
   m.innerHTML = `
     <div class="modal-box">
       <button class="modal-close" id="mC">✕</button>
-      ${mIdx > 0  '<button class="modal-nav modal-prev" id="mP">&#8249;</button>' : ''}
+      ${mIdx > 0 ? '<button class="modal-nav modal-prev" id="mP">&#8249;</button>' : ''}
       <div class="modal-content">
         ${media}
-        ${item.caption  `<p class="modal-caption">${esc(item.caption)}</p>` : ''}
+        ${item.caption ? `<p class="modal-caption">${esc(item.caption)}</p>` : ''}
         <div class="modal-actions">
-          ${dlUrl  `<a class="modal-btn" href="${esc(dlUrl)}" download target="_blank" rel="noopener">⬇ Herunterladen</a>` : ''}
-          ${igUrl  `<a class="modal-btn modal-btn-outline" href="${esc(igUrl)}" target="_blank" rel="noopener">Auf Instagram oeffnen ↗</a>` : ''}
+          ${dlUrl ? `<a class="modal-btn" href="${esc(dlUrl)}" download target="_blank" rel="noopener">⬇ Herunterladen</a>` : ''}
+          ${igUrl ? `<a class="modal-btn modal-btn-outline" href="${esc(igUrl)}" target="_blank" rel="noopener">Auf Instagram oeffnen ↗</a>` : ''}
         </div>
         <div class="modal-counter">${mIdx+1} / ${mItems.length}</div>
       </div>
-      ${mIdx < mItems.length-1  '<button class="modal-nav modal-next" id="mN">&#8250;</button>' : ''}
+      ${mIdx < mItems.length-1 ? '<button class="modal-nav modal-next" id="mN">&#8250;</button>' : ''}
     </div>`;
   document.body.appendChild(m);
-  m.querySelector('#mC').addEventListener('click', () => m.remove());
-  m.querySelector('#mP').addEventListener('click', () => { mIdx--; buildModal(); });
-  m.querySelector('#mN').addEventListener('click', () => { mIdx++; buildModal(); });
+  m.querySelector('#mC')?.addEventListener('click', () => m.remove());
+  m.querySelector('#mP')?.addEventListener('click', () => { mIdx--; buildModal(); });
+  m.querySelector('#mN')?.addEventListener('click', () => { mIdx++; buildModal(); });
   m.addEventListener('click', e => { if (e.target === m) m.remove(); });
   const onKey = e => {
     if (!document.getElementById('igModal')) { document.removeEventListener('keydown', onKey); return; }
@@ -113,26 +113,26 @@ let _renderedUsername = null;
 function renderProfileHead(data) {
   const p = data.profile || {};
   _renderedUsername = p.username;
-  const verBadge  = p.isVerified  '<span class="badge ok">✓ Verifiziert</span>' : '';
-  const privBadge = p.isPrivate   '<span class="badge warn">🔒 Privat</span>' : '';
+  const verBadge  = p.isVerified ? '<span class="badge ok">✓ Verifiziert</span>' : '';
+  const privBadge = p.isPrivate  ? '<span class="badge warn">🔒 Privat</span>' : '';
 
-  document.getElementById('ig-profile-head').remove();
+  document.getElementById('ig-profile-head')?.remove();
   const head = document.createElement('div');
   head.id = 'ig-profile-head';
   head.innerHTML = `
     <div class="profile-head">
-      <div class="avatar-wrap${p.isVerified  ' avatar-verified' : ''}">
+      <div class="avatar-wrap${p.isVerified ? ' avatar-verified' : ''}">
         <img class="avatar" src="${esc(p.avatar)||BLANK}" alt="${esc(p.username)}" referrerpolicy="no-referrer" onerror="this.src='${BLANK}'" />
       </div>
       <div class="profile-main">
         <h2>${esc(p.fullName || p.username || 'Instagram Profil')}</h2>
         <div class="username-line"><span class="at-sign">@</span>${esc(p.username || '')}</div>
         <div class="badge-row">${verBadge}${privBadge}</div>
-        ${p.bio  `<p class="bio">${esc(p.bio)}</p>` : ''}
-        ${p.category  `<div class="profile-category">${esc(p.category)}</div>` : ''}
+        ${p.bio ? `<p class="bio">${esc(p.bio)}</p>` : ''}
+        ${p.category ? `<div class="profile-category">${esc(p.category)}</div>` : ''}
         <div class="action-row">
-          ${p.instagramUrl  `<a class="small-link" target="_blank" rel="noopener" href="${esc(p.instagramUrl)}">Auf Instagram ansehen</a>` : ''}
-          ${p.externalUrl   `<a class="small-link light" target="_blank" rel="noopener" href="${esc(p.externalUrl)}">${esc(p.externalUrl.replace(/^https:\/\//,'').slice(0,36))}</a>` : ''}
+          ${p.instagramUrl ? `<a class="small-link" target="_blank" rel="noopener" href="${esc(p.instagramUrl)}">Auf Instagram ansehen</a>` : ''}
+          ${p.externalUrl  ? `<a class="small-link light" target="_blank" rel="noopener" href="${esc(p.externalUrl)}">${esc(p.externalUrl.replace(/^https?:\/\//,'').slice(0,36))}</a>` : ''}
         </div>
       </div>
       <div class="stats">
@@ -167,7 +167,7 @@ function renderTabsShell() {
       tabs.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       tabs.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
       tab.classList.add('active');
-      document.getElementById(`panel-${tab.dataset.panel}`).classList.add('active');
+      document.getElementById(`panel-${tab.dataset.panel}`)?.classList.add('active');
     });
   });
 }
@@ -178,7 +178,7 @@ function updateTabLabel(panelKey, items) {
   if (!tab) return;
   const LABELS = { posts:'Beitraege', reels:'Reels', stories:'Stories', highlights:'Highlights' };
   const label  = LABELS[panelKey] || panelKey;
-  tab.innerHTML = items.length  `${label} <span class="tab-count">${items.length}</span>` : label;
+  tab.innerHTML = items?.length ? `${label} <span class="tab-count">${items.length}</span>` : label;
 }
 
 // ─── Fill a single panel ──────────────────────────────────────────────────────
@@ -186,12 +186,12 @@ function fillPanel(panelKey, collection, label) {
   const el = document.getElementById(`panel-${panelKey}`);
   if (!el) return;
   el.innerHTML = renderCollection(collection, label, panelKey);
-  updateTabLabel(panelKey, collection.items);
+  updateTabLabel(panelKey, collection?.items);
   // Wire up modal clicks for the newly inserted cards
   el.querySelectorAll('.media-card[data-index]').forEach(card => {
     card.addEventListener('click', e => {
       if (e.target.closest('a')) return;
-      const items = (window._igData.[panelKey].items) || [];
+      const items = (window._igData?.[panelKey]?.items) || [];
       const idx   = parseInt(card.dataset.index, 10);
       if (items.length) openModal(items, idx);
     });
@@ -200,10 +200,10 @@ function fillPanel(panelKey, collection, label) {
 
 // ─── Show skeleton placeholders while media loads ─────────────────────────────
 function showSkeletons() {
-  document.getElementById('panel-posts').replaceChildren(...[document.createRange().createContextualFragment(skeletonGrid(12))]);
-  document.getElementById('panel-reels').replaceChildren(...[document.createRange().createContextualFragment(skeletonGrid(12))]);
-  document.getElementById('panel-stories').replaceChildren(...[document.createRange().createContextualFragment(storyDots())]);
-  document.getElementById('panel-highlights').replaceChildren(...[document.createRange().createContextualFragment(skeletonGrid(6))]);
+  document.getElementById('panel-posts')?.replaceChildren(...[document.createRange().createContextualFragment(skeletonGrid(12))]);
+  document.getElementById('panel-reels')?.replaceChildren(...[document.createRange().createContextualFragment(skeletonGrid(12))]);
+  document.getElementById('panel-stories')?.replaceChildren(...[document.createRange().createContextualFragment(storyDots())]);
+  document.getElementById('panel-highlights')?.replaceChildren(...[document.createRange().createContextualFragment(skeletonGrid(6))]);
 }
 
 function germanEmptyMessage(msg, label) {
@@ -216,10 +216,10 @@ function germanEmptyMessage(msg, label) {
 
 // ─── Render collection ────────────────────────────────────────────────────────
 function renderCollection(col, label, key) {
-  const items = col.items || [];
-  const msg   = col.message || '';
+  const items = col?.items || [];
+  const msg   = col?.message || '';
   if (!items.length) {
-    const icon = msg.includes('private')  '🔒' : msg.includes('24')  '⭕' : '📭';
+    const icon = msg.includes('private') ? '🔒' : msg.includes('24') ? '⭕' : '📭';
     return `<div class="empty-state"><div style="font-size:38px;margin-bottom:8px">${icon}</div><strong>Keine ${esc(label)}</strong><p>${esc(germanEmptyMessage(msg, label))}</p></div>`;
   }
   return `<div class="media-grid">${items.map((item,i) => mediaCard(item,i,key)).join('')}</div>`;
@@ -236,18 +236,18 @@ function mediaCard(item, idx, key) {
   return `
     <article class="media-card" data-index="${idx}" data-collection="${esc(key)}" title="Zum Ansehen klicken">
       <div class="thumb-wrap">
-        ${thumb  `<img class="media-thumb" src="${esc(thumb)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.classList.add('thumb-err')" alt="" />` : `<div class="media-thumb"></div>`}
-        ${isVid  '<div class="play-badge">▶</div>' : ''}
+        ${thumb ? `<img class="media-thumb" src="${esc(thumb)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.classList.add('thumb-err')" alt="" />` : `<div class="media-thumb"></div>`}
+        ${isVid ? '<div class="play-badge">▶</div>' : ''}
       </div>
       <div class="media-body">
         <div class="media-meta">
           <span>${TICON[item.type]||'📷'} ${esc(TYPE_LABELS[item.type] || 'Foto')}</span>
-          ${likes>0  `<span>♥ ${likes.toLocaleString()}</span>` : ''}
+          ${likes>0 ? `<span>♥ ${likes.toLocaleString()}</span>` : ''}
         </div>
-        ${item.caption  `<p class="media-caption">${esc(item.caption)}</p>` : ''}
+        ${item.caption ? `<p class="media-caption">${esc(item.caption)}</p>` : ''}
         <div class="card-actions">
-          ${dlUrl  `<a class="card-btn card-btn-dl" href="${esc(dlUrl)}" download target="_blank" rel="noopener">Herunterladen</a>` : ''}
-          ${igUrl  `<a class="card-btn card-btn-ig" href="${esc(igUrl)}" target="_blank" rel="noopener">↗</a>` : ''}
+          ${dlUrl ? `<a class="card-btn card-btn-dl" href="${esc(dlUrl)}" download target="_blank" rel="noopener">Herunterladen</a>` : ''}
+          ${igUrl ? `<a class="card-btn card-btn-ig" href="${esc(igUrl)}" target="_blank" rel="noopener">↗</a>` : ''}
         </div>
       </div>
     </article>`;
@@ -304,7 +304,7 @@ async function runSearch(raw) {
     const d1  = await r1.json();
     if (!r1.ok || !d1.success) throw new Error(d1.error || 'Instagram-Daten konnten nicht geladen werden.');
 
-    const username = d1.profile.username || value.trim().replace(/^@/, '');
+    const username = d1.profile?.username || value.trim().replace(/^@/, '');
     _currentUser = username;
     setStatus(`@${username} wird geladen...`);
 
@@ -314,8 +314,8 @@ async function runSearch(raw) {
       setStatus(`@${username} Profil geladen - Stories, Beitraege und Reels werden abgerufen...`);
       pollForMedia(username, 3000);  // start polling every 3s immediately
     } else {
-      const n = d1.posts.items.length || 0;
-      setStatus(n > 0  `${n} Beitraege geladen.` : 'Profil geladen.');
+      const n = d1.posts?.items?.length || 0;
+      setStatus(n > 0 ? `${n} Beitraege geladen.` : 'Profil geladen.');
     }
 
   } catch (err) {
@@ -335,14 +335,14 @@ function pollForMedia(username, delay) {
       if (!d.success) return;
 
       // Re-render whenever posts, stories, reels or highlights increase — or loading finishes
-      const prevPosts      = window._igData.posts.items.length      || 0;
-      const prevStories    = window._igData.stories.items.length    || 0;
-      const prevReels      = window._igData.reels.items.length      || 0;
-      const prevHighlights = window._igData.highlights.items.length || 0;
-      const newPosts      = d.posts.items.length      || 0;
-      const newStories    = d.stories.items.length    || 0;
-      const newReels      = d.reels.items.length      || 0;
-      const newHighlights = d.highlights.items.length || 0;
+      const prevPosts      = window._igData?.posts?.items?.length      || 0;
+      const prevStories    = window._igData?.stories?.items?.length    || 0;
+      const prevReels      = window._igData?.reels?.items?.length      || 0;
+      const prevHighlights = window._igData?.highlights?.items?.length || 0;
+      const newPosts      = d.posts?.items?.length      || 0;
+      const newStories    = d.stories?.items?.length    || 0;
+      const newReels      = d.reels?.items?.length      || 0;
+      const newHighlights = d.highlights?.items?.length || 0;
 
       const hasNewData = newPosts > prevPosts || newStories > prevStories ||
                          newReels > prevReels || newHighlights > prevHighlights;
@@ -354,7 +354,7 @@ function pollForMedia(username, delay) {
       if (d.backgroundLoading) {
         // Show live progress while paginating
         const prog = d.loadingProgress;
-        if (prog.postsTotal > 0) {
+        if (prog?.postsTotal > 0) {
           setStatus(`Beitraege werden geladen... ${prog.postsLoaded} von ${prog.postsTotal}`);
         } else {
           setStatus(`Beitraege und Reels fuer @${username} werden geladen...`);
@@ -362,14 +362,14 @@ function pollForMedia(username, delay) {
         // Poll every 3s while loading — fast enough to feel live
         pollForMedia(username, 3000);
       } else {
-        const posts  = d.posts.items.length  || 0;
-        const reels  = d.reels.items.length  || 0;
-        const stories = d.stories.items.length || 0;
+        const posts  = d.posts?.items?.length  || 0;
+        const reels  = d.reels?.items?.length  || 0;
+        const stories = d.stories?.items?.length || 0;
         const parts  = [];
         if (posts)   parts.push(`${posts} Beitraege`);
         if (reels)   parts.push(`${reels} Reels`);
         if (stories) parts.push(`${stories} Stories`);
-        setStatus(parts.length  `${parts.join(', ')} geladen.` : 'Profil geladen.');
+        setStatus(parts.length ? `${parts.join(', ')} geladen.` : 'Profil geladen.');
       }
     } catch {
       // Silently retry
@@ -393,7 +393,7 @@ document.querySelectorAll('.faq-q').forEach(btn => {
     // Close all others
     document.querySelectorAll('.faq-item.open').forEach(el => {
       el.classList.remove('open');
-      el.querySelector('.faq-q').setAttribute('aria-expanded','false');
+      el.querySelector('.faq-q')?.setAttribute('aria-expanded','false');
     });
     if (!isOpen) {
       item.classList.add('open');
