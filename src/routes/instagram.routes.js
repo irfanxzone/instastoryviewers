@@ -98,8 +98,11 @@ router.get('/all/:input', async (req, res, next) => {
     const pending = data.backgroundLoading && hasPendingBrowserJob(resolved.username);
     res.status(status).json({
       ...data,
+      // Do not leak a stale cached backgroundLoading=true flag forever.
+      // The frontend should keep polling only while a real browser job is pending.
+      backgroundLoading: pending,
       meta: metaBlock(cached),
-      ...(pending ? { backgroundLoading: true, pollAfterMs: 14000 } : {})
+      ...(pending ? { pollAfterMs: 14000 } : {})
     });
   } catch (err) {
     next(err);
