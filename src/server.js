@@ -115,6 +115,14 @@ cleanPages.forEach(p => {
 });
 
 // Blog posts clean URLs
+app.get('/so-kannst-du-instagram-stories-ansehen', (req, res) => {
+  res.sendFile(path.join(publicDir, 'blog', 'so-kannst-du-instagram-stories-ansehen.html'));
+});
+
+app.get('/blog/so-kannst-du-instagram-stories-ansehen', (req, res) => {
+  res.redirect(301, '/so-kannst-du-instagram-stories-ansehen');
+});
+
 app.get('/blog/:slug', (req, res) => {
   const file = path.join(publicDir, 'blog', `${req.params.slug}.html`);
   if (require('fs').existsSync(file)) return res.sendFile(file);
