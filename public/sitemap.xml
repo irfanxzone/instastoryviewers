@@ -1,4 +1,4 @@
-<xml version="1.0" encoding="UTF-8">
+<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
         xmlns:xhtml="http://www.w3.org/1999/xhtml">
 
@@ -12,9 +12,17 @@
 
   <url>
     <loc>https://instastoryviewers.de/blog</loc>
-    <lastmod>2026-05-30</lastmod>
+    <lastmod>2026-08-08</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
+  </url>
+
+  <url>
+    <loc>https://instastoryviewers.de/blog/so-kannst-du-instagram-stories-ansehen</loc>
+    <lastmod>2026-08-08</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <xhtml:link rel="alternate" hreflang="de" href="https://instastoryviewers.de/blog/so-kannst-du-instagram-stories-ansehen"/>
   </url>
 
   <url>
@@ -58,7 +66,6 @@
     <changefreq>monthly</changefreq>
     <priority>0.4</priority>
   </url>
-
 
   <!-- <url>
     <loc>https://instastoryviewers.de/blog/view-instagram-stories-anonymously</loc>
