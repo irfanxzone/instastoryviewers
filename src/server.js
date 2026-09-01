@@ -115,6 +115,14 @@ cleanPages.forEach(p => {
 });
 
 // Blog posts clean URLs
+app.get('/instagram-story-viewer-konkurrenzanalyse', (req, res) => {
+  res.sendFile(path.join(publicDir, 'blog', 'instagram-story-viewer-konkurrenzanalyse.html'));
+});
+
+app.get('/blog/instagram-story-viewer-konkurrenzanalyse', (req, res) => {
+  res.redirect(301, '/instagram-story-viewer-konkurrenzanalyse');
+});
+
 app.get('/so-kannst-du-instagram-stories-ansehen', (req, res) => {
   res.sendFile(path.join(publicDir, 'blog', 'so-kannst-du-instagram-stories-ansehen.html'));
 });

@@ -173,7 +173,7 @@ video.modal-media{background:#000}
 .form-submit:hover{opacity:.9}
 
 @media(max-width:980px){.blog-grid{grid-template-columns:repeat(2,1fr)}.contact-grid{grid-template-columns:1fr}}
-@media(max-width:620px){.blog-grid{grid-template-columns:1fr}.blog-hero h1,.page-hero h1{font-size:28px}.contact-grid{padding:36px 18px 60px}.legal-body{padding:36px 18px 60px}}
+@media(max-width:620px){.blog-grid{grid-template-columns:1fr}.featured-article{grid-template-columns:1fr!important}.featured-article .blog-thumb,.featured-article .blog-thumb img{min-height:220px!important}.blog-hero h1,.page-hero h1{font-size:28px}.contact-grid{padding:36px 18px 60px}.legal-body{padding:36px 18px 60px}}
 
 @media (max-width:980px){.profile-head{grid-template-columns:1fr;text-align:center}.avatar{margin:0 auto}.stats{min-width:0}.media-grid{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:960px){.steps{grid-template-columns:repeat(3,1fr);gap:18px}.steps::before{display:none}.step{margin:0}}
