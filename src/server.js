@@ -115,6 +115,14 @@ cleanPages.forEach(p => {
 });
 
 // Blog posts clean URLs
+app.get('/instagram-stories-anonym-ansehen-legal', (req, res) => {
+  res.sendFile(path.join(publicDir, 'blog', 'instagram-stories-anonym-ansehen-legal.html'));
+});
+
+app.get('/blog/instagram-stories-anonym-ansehen-legal', (req, res) => {
+  res.redirect(301, '/instagram-stories-anonym-ansehen-legal');
+});
+
 app.get('/instagram-story-viewer-konkurrenzanalyse', (req, res) => {
   res.sendFile(path.join(publicDir, 'blog', 'instagram-story-viewer-konkurrenzanalyse.html'));
 });
