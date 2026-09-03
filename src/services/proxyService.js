@@ -15,6 +15,10 @@ function hasProxies() {
   return proxies.length > 0;
 }
 
+function getProxyCount() {
+  return proxies.length;
+}
+
 function getCurrentProxy() {
   if (!proxies.length) return null;
   return proxies[currentIndex % proxies.length];
@@ -60,6 +64,7 @@ loadProxies();
 
 module.exports = {
   hasProxies,
+  getProxyCount,
   getCurrentProxy,
   rotateProxy,
   getAxiosProxyConfig,

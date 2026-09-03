@@ -519,12 +519,15 @@ async function fetchViaBrowserFallbackAttempt(username, cacheKey = null, triedWo
     }
 
     console.log(`[browser] Fetching @${username}…`);
-    await page.goto(`https://www.instagram.com/${encodeURIComponent(username)}/`, {
+    const navigation = await page.goto(`https://www.instagram.com/${encodeURIComponent(username)}/`, {
       waitUntil: 'domcontentloaded', timeout: 20000
     });
 
     // Detect scraping challenge and auto-dismiss it
     const finalUrl = page.url();
+    if (navigation?.status() === 407 || finalUrl.startsWith('chrome-error://')) {
+      throw new Error(`proxy_navigation_failed:${navigation?.status() || 'chrome-error'}`);
+    }
     if (/\/accounts\/(suspended|login|challenge|scraping_warning)/i.test(finalUrl)) {
       throw new Error(`bad_session_redirect:${finalUrl}`);
     }

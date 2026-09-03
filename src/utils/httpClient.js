@@ -42,24 +42,33 @@ function buildAxiosConfig(headers, proxyUrl, options = {}) {
 
 async function get(url, headers = {}, options = {}) {
   // Explicit proxy override in options, or use the current proxy from the pool
-  const proxyUrl = Object.prototype.hasOwnProperty.call(options, 'proxy')
-    ? options.proxy
-    : proxyService.getCurrentProxy();
+  const hasExplicitProxy = Object.prototype.hasOwnProperty.call(options, 'proxy');
+  const maxAttempts = hasExplicitProxy ? 1 : Math.max(1, proxyService.getProxyCount());
+  let lastError;
 
-  const config = buildAxiosConfig(headers, proxyUrl, options);
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const proxyUrl = hasExplicitProxy ? options.proxy : proxyService.getCurrentProxy();
+    const config = buildAxiosConfig(headers, proxyUrl, options);
 
-  try {
-    return await axios.get(url, config);
-  } catch (err) {
-    // Rotate and retry once when the proxy itself is the problem
-    if (proxyService.hasProxies() && proxyService.shouldRotateOnError(err)) {
-      proxyService.rotateProxy();
-      const nextProxy = proxyService.getCurrentProxy();
-      const retryConfig = buildAxiosConfig(headers, nextProxy, options);
-      return axios.get(url, retryConfig);
+    try {
+      const response = await axios.get(url, config);
+      // Axios intentionally returns 4xx responses to callers, but 407 is a
+      // proxy-authentication failure and must never pin the whole pool.
+      if (response.status !== 407 || hasExplicitProxy || !proxyService.hasProxies()) {
+        return response;
+      }
+      lastError = new Error('Proxy authentication failed (407)');
+    } catch (err) {
+      lastError = err;
+      if (hasExplicitProxy || !proxyService.hasProxies() || !proxyService.shouldRotateOnError(err)) {
+        throw err;
+      }
     }
-    throw err;
+
+    proxyService.rotateProxy();
   }
+
+  throw lastError || new Error('No working outbound proxy is available.');
 }
 
 module.exports = { get, randomUa };
