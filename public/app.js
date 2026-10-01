@@ -112,6 +112,12 @@ const BLANK = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' widt
 let _renderedUsername = null;
 function renderProfileHead(data) {
   const p = data.profile || {};
+  const staleFetchedAt = data.meta?.cache?.stale && data.fetchedAt
+    ? new Date(data.fetchedAt).toLocaleString('de-DE')
+    : '';
+  const staleMarkup = staleFetchedAt
+    ? '<div class=profile-category>Zwischengespeicherter Stand: ' + esc(staleFetchedAt) + '</div>'
+    : '';
   _renderedUsername = p.username;
   const verBadge  = p.isVerified ? '<span class="badge ok">✓ Verifiziert</span>' : '';
   const privBadge = p.isPrivate  ? '<span class="badge warn">🔒 Privat</span>' : '';
@@ -142,6 +148,9 @@ function renderProfileHead(data) {
       </div>
     </div>`;
   resultShell.insertBefore(head, resultShell.firstChild);
+  if (staleMarkup) {
+    head.querySelector('.profile-main')?.insertAdjacentHTML('beforeend', staleMarkup);
+  }
 }
 
 // ─── Render tabs shell (only once) ───────────────────────────────────────────

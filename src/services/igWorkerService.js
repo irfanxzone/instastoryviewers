@@ -3,12 +3,17 @@
 const crypto = require('crypto');
 
 const FAILURE_COOLDOWN_MS = Number(process.env.IG_WORKER_FAILURE_COOLDOWN_MS || 10 * 60 * 1000);
+const RATE_LIMIT_BASE_COOLDOWN_MS = Number(process.env.IG_RATE_LIMIT_BASE_COOLDOWN_MS || 15 * 60 * 1000);
+const RATE_LIMIT_MAX_COOLDOWN_MS = Number(process.env.IG_RATE_LIMIT_MAX_COOLDOWN_MS || 6 * 60 * 60 * 1000);
+const AUTH_FAILURE_COOLDOWN_MS = Number(process.env.IG_AUTH_FAILURE_COOLDOWN_MS || 24 * 60 * 60 * 1000);
 const ACQUIRE_TIMEOUT_MS = Number(process.env.IG_WORKER_ACQUIRE_TIMEOUT_MS || 45 * 1000);
 const ACQUIRE_POLL_MS = 500;
 const PREFERRED_WORKER_INDEX = Math.max(0, Number(process.env.IG_WORKER_PREFERRED_INDEX || 2) - 1);
 
 let workers = [];
 let cursor = 0;
+let globalCooldownUntil = 0;
+let globalCooldownReason = '';
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -121,6 +126,10 @@ function pickAvailableWorker(excludedIds = new Set()) {
 
 async function acquireWorker(reason = 'request', excludedIds = new Set()) {
   if (!workers.length) return null;
+  if (Date.now() < globalCooldownUntil) {
+    console.warn(`[ig-workers] Global Instagram cooldown active for ${Math.ceil((globalCooldownUntil - Date.now()) / 1000)}s`);
+    return null;
+  }
   const started = Date.now();
 
   while (Date.now() - started < ACQUIRE_TIMEOUT_MS) {
@@ -144,13 +153,44 @@ function releaseWorker(worker) {
   worker.busy = false;
 }
 
-function markWorkerFailed(worker, reason = 'unknown') {
+function markWorkerFailed(worker, reason = 'unknown', cooldownMs = FAILURE_COOLDOWN_MS) {
   if (!worker) return;
   worker.failures++;
   worker.lastError = reason;
-  worker.failedUntil = Date.now() + FAILURE_COOLDOWN_MS;
+  worker.failedUntil = Date.now() + Math.max(1000, Number(cooldownMs) || FAILURE_COOLDOWN_MS);
   worker.busy = false;
-  console.warn(`[ig-workers] ${worker.id} paused for ${Math.round(FAILURE_COOLDOWN_MS / 60000)} min: ${reason}`);
+  console.warn(`[ig-workers] ${worker.id} paused for ${Math.ceil((worker.failedUntil - Date.now()) / 60000)} min: ${reason}`);
+}
+
+function rateLimitCooldownMs(worker, retryAfterMs = 0) {
+  if (retryAfterMs > 0) return Math.min(retryAfterMs, RATE_LIMIT_MAX_COOLDOWN_MS);
+  const exponent = Math.max(0, Math.min(5, worker?.failures || 0));
+  return Math.min(RATE_LIMIT_BASE_COOLDOWN_MS * (2 ** exponent), RATE_LIMIT_MAX_COOLDOWN_MS);
+}
+
+function setGlobalCooldown(cooldownMs, reason = 'upstream_cooldown') {
+  const until = Date.now() + Math.max(1000, Number(cooldownMs) || RATE_LIMIT_BASE_COOLDOWN_MS);
+  if (until > globalCooldownUntil) {
+    globalCooldownUntil = until;
+    globalCooldownReason = reason;
+  }
+  console.warn(`[ig-workers] Global Instagram cooldown set for ${Math.ceil((globalCooldownUntil - Date.now()) / 1000)}s: ${globalCooldownReason}`);
+}
+
+function markWorkerRateLimited(worker, retryAfterMs = 0) {
+  const cooldownMs = rateLimitCooldownMs(worker, retryAfterMs);
+  markWorkerFailed(worker, 'instagram_429', cooldownMs);
+  setGlobalCooldown(cooldownMs, 'instagram_429');
+  return cooldownMs;
+}
+
+function markWorkerAuthFailed(worker, reason = 'login_or_checkpoint') {
+  markWorkerFailed(worker, reason, AUTH_FAILURE_COOLDOWN_MS);
+}
+
+function getGlobalCooldown() {
+  const remainingMs = Math.max(0, globalCooldownUntil - Date.now());
+  return { active: remainingMs > 0, remainingMs, reason: remainingMs > 0 ? globalCooldownReason : '' };
 }
 
 function listWorkers() {
@@ -183,6 +223,10 @@ module.exports = {
   acquireWorker,
   releaseWorker,
   markWorkerFailed,
+  markWorkerRateLimited,
+  markWorkerAuthFailed,
+  setGlobalCooldown,
+  getGlobalCooldown,
   hasWorkers,
   listWorkers,
   loadWorkers,

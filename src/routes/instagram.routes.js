@@ -6,11 +6,12 @@ const { getCache, setCacheMerged, deleteCache } = require('../services/cacheServ
 const { fetchAllPublic, hasPendingBrowserJob } = require('../services/instagramPublicFetcher');
 
 const router = express.Router();
+const activeLoads = new Map();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function cacheKey(username) {
-  return `all:${username.toLowerCase()}`;
+  return `all:hybrid-v2:${username.toLowerCase()}`;
 }
 
 function metaBlock(cached) {
@@ -29,6 +30,24 @@ function httpStatusFor(data) {
     case 'ERROR': return 500;
     default: return 200; // PUBLIC_ACCOUNT, PRIVATE_ACCOUNT, PARTIAL_DATA
   }
+}
+
+function loadOnce(username, key) {
+  const lockKey = username.toLowerCase();
+  const existing = activeLoads.get(lockKey);
+  if (existing) {
+    console.log(`[requests] Joined existing fetch for @${lockKey}`);
+    return existing;
+  }
+
+  const job = fetchAllPublic(username)
+    .then(fresh => {
+      setCacheMerged(key, fresh);
+      return fresh;
+    })
+    .finally(() => activeLoads.delete(lockKey));
+  activeLoads.set(lockKey, job);
+  return job;
 }
 
 async function resolveAndLoad(rawInput, { forceRefresh = false } = {}) {
@@ -55,16 +74,13 @@ async function resolveAndLoad(rawInput, { forceRefresh = false } = {}) {
 
   // Stale cache — return immediately and refresh in the background (true SWR)
   if (cached?.stale && !forceRefresh) {
-    fetchAllPublic(resolved.username)
-      .then(fresh => setCacheMerged(key, fresh))
-      .catch(() => {});
+    loadOnce(resolved.username, key).catch(() => {});
     return { data: cached.data, cached };
   }
 
   // No cache — must wait for a fresh fetch
   try {
-    const fresh = await fetchAllPublic(resolved.username);
-    setCacheMerged(key, fresh);
+    const fresh = await loadOnce(resolved.username, key);
     return { data: fresh, cached: null };
   } catch (fetchErr) {
     throw fetchErr;

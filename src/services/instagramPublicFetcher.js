@@ -8,6 +8,7 @@ const { isLoginWallText, isBlockedResponse, NotFoundError } = require('../utils/
 const proxyService = require('./proxyService');
 const { setCache, setCacheMerged } = require('./cacheService');
 const sessionService = require('./sessionService');
+const { fetchStoriesViaOpenHandle, fetchMediaViaOpenHandle } = require('./openHandleService');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 function getQueryHashes() {
@@ -30,29 +31,63 @@ const PROFILE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 // The result is written to cache so the frontend's auto-poll picks it up.
 const activeBrowserJobs = new Map(); // username → Promise
 
+function unavailableStories(message = 'Stories could not be loaded right now. Please try again shortly.') {
+  return { available: false, items: [], source: 'openhandle', state: 'TEMPORARILY_UNAVAILABLE', message };
+}
+
+async function attachOpenHandleStories(username, result) {
+  if (!result?.success) return result;
+  if (result.profile?.isPrivate) {
+    result.stories = {
+      available: false, items: [], source: 'openhandle', state: 'PRIVATE',
+      message: 'This account is private. Stories are not publicly available.'
+    };
+    return result;
+  }
+  try {
+    result.stories = await fetchStoriesViaOpenHandle(username);
+    result.source = `${result.source || 'instagram_public'}+openhandle_stories`;
+  } catch (error) {
+    console.warn(`[openhandle:stories] Failed @${username}: HTTP ${error.status || 'network'}`);
+    result.stories = unavailableStories();
+  }
+  return result;
+}
+
+async function attachProviderFallbacks(username, result) {
+  result = await attachOpenHandleStories(username, result);
+  if (!result?.success || result.profile?.isPrivate) return result;
+
+  const missing = ['posts', 'reels'].filter(section => !result[section]?.items?.length);
+  const fetched = await Promise.allSettled(
+    missing.map(section => fetchMediaViaOpenHandle(username, section))
+  );
+  fetched.forEach((entry, index) => {
+    const section = missing[index];
+    if (entry.status === 'fulfilled') result[section] = entry.value;
+    else console.warn(`[openhandle:${section}:fallback] Failed @${username}: HTTP ${entry.reason?.status || 'network'}`);
+  });
+
+  if (result.posts?.items?.length && result.reels?.items?.length) {
+    result.backgroundLoading = false;
+    result.source = `${result.source || 'instagram_public'}+openhandle_media_fallback`;
+  }
+  return result;
+}
+
 function scheduleBrowserFetch(username, cacheKey) {
   const key = username.toLowerCase();
   if (activeBrowserJobs.has(key)) return; // already running
 
   const job = fetchViaBrowserFallback(username, cacheKey)
     .then(async result => {
-      if (result?.success && (result.posts?.items?.length > 0 || result.status === 'PRIVATE_ACCOUNT')) {
-        // Browser already fetched stories via network interception — only try the HTTP
-        // path if the browser came back empty (avoids overwriting good story data with
-        // a failed redirect from the server-side HTTP client).
-        if (!process.env.IG_WORKERS && !result.stories?.items?.length && result.profile?.id && sessionService.hasAnySessions()) {
-          try {
-            const { normalizeStoryItems } = require('./instagramNormalizer');
-            const storyItems = await fetchStoriesServerSide(result.profile.id, username, {});
-            if (storyItems.length) {
-              result.stories = { available: true, items: normalizeStoryItems(storyItems), message: undefined };
-              console.log(`[bg] Stories fetched via HTTP for @${username}: ${storyItems.length} items`);
-            }
-          } catch {}
-        }
+      if (result?.success && result.profile?.username) {
+        // Browser supplies profile/posts/reels only. Stories come exclusively
+        // from OpenHandle in the foreground response.
+        result.stories = unavailableStories();
         result.backgroundLoading = false;
         setCacheMerged(cacheKey, result);
-        console.log(`[bg] Browser fetch done @${username}: ${result.posts?.items?.length || 0} posts, ${result.stories?.items?.length || 0} stories`);
+        console.log(`[bg] Browser fetch done @${username}: ${result.posts?.items?.length || 0} posts, ${result.reels?.items?.length || 0} reels`);
       }
     })
     .catch(err => console.warn(`[bg] Browser fetch failed @${username}: ${err?.message}`))
@@ -135,72 +170,6 @@ async function fetchProfileSession(username) {
 }
 
 // ─── Server-side story fetch (via proxy) ─────────────────────────────────────
-async function fetchStoriesServerSide(userId, username, session) {
-  if (!userId) return [];
-
-  const endpoints = [
-    `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`,
-    `https://www.instagram.com/api/v1/feed/user_story/?user_id=${userId}`,
-    `https://www.instagram.com/api/v1/user/${userId}/story/`
-  ];
-
-  // Try 1: no session — residential proxy IP alone is often enough for public stories
-  try {
-    const anonHeaders = {
-      'User-Agent': PROFILE_UA,
-      'Accept': 'application/json, text/plain, */*',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'X-IG-App-ID': '936619743392459',
-      'X-ASBD-ID': '129477',
-      'Referer': `https://www.instagram.com/${username}/`
-    };
-    for (const url of endpoints) {
-      const res = await get(url, anonHeaders, { maxRedirects: 0 });
-      const data = typeof res.data === 'object' ? res.data : tryJsonParse(res.data);
-      const items = res.status < 400
-        ? (data?.reels_media?.[0]?.items || data?.reels?.[String(userId)]?.items || data?.story?.items || data?.items || [])
-        : [];
-      console.log(`[stories:anon] ${url.split('instagram.com')[1]?.split('?')[0]} → ${res.status}, items=${items.length}, body=${JSON.stringify(data).slice(0, 300)}`);
-      if (items.length) return items;
-    }
-  } catch (e) { console.warn(`[stories:anon] request error: ${e.message}`); }
-
-  // Try 2: warmed session pool — each entry has matching {cookie, csrfToken}
-  // so Instagram does not reject the request as a csrf mismatch.
-  const sessionPool = await sessionService.getFullSessionsForRetry(3);
-  if (!sessionPool.length) return [];
-
-  for (const { cookie, csrfToken, decodedId } of sessionPool) {
-    const storySession = { cookie, csrfToken };
-    let sessionFailed = false;
-    try {
-      for (const url of endpoints) {
-        const res = await get(url, buildApiHeaders(username, storySession), { maxRedirects: 0 });
-        const data = typeof res.data === 'object' ? res.data : tryJsonParse(res.data);
-        const items = res.status < 400
-          ? (data?.reels_media?.[0]?.items || data?.reels?.[String(userId)]?.items || data?.story?.items || data?.items || [])
-          : [];
-        console.log(`[stories:session] ${url.split('instagram.com')[1]?.split('?')[0]} → ${res.status}, items=${items.length}`);
-        const location = String(res.headers?.location || '');
-        const authRedirect = res.status >= 300 && res.status < 400 &&
-          /accounts\/(login|challenge|scraping_warning)/i.test(location);
-        if ([401, 403, 429].includes(res.status) || authRedirect) {
-          sessionFailed = true;
-          break;
-        }
-        if (items.length) return items;
-      }
-    } catch (e) { console.warn(`[stories:session] request error: ${e.message}`); }
-    if (sessionFailed) {
-      sessionService.markFailed(decodedId);
-      console.warn(`[stories:session] session rejected, trying next. pool: ${JSON.stringify(sessionService.stats())}`);
-      continue;
-    }
-  }
-
-  return [];
-}
-
 // ─── API endpoint attempts ────────────────────────────────────────────────────
 async function tryWebProfileInfo(username, session) {
   const url = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`;
@@ -298,7 +267,7 @@ function extractUserFromHtml(html, username) {
 
 // ─── Main entry point ─────────────────────────────────────────────────────────
 async function fetchAllPublic(username) {
-  const cacheKey = `all:${username.toLowerCase()}`;
+  const cacheKey = `all:hybrid-v2:${username.toLowerCase()}`;
   let session = null;
 
   try {
@@ -311,42 +280,19 @@ async function fetchAllPublic(username) {
   if (session) {
     // Fast: try HTML deep extraction (no extra requests)
     const htmlResult = extractUserFromHtml(session.html, username);
-    if (htmlResult?.posts?.items?.length > 0) return htmlResult;
+    if (htmlResult?.posts?.items?.length > 0) return attachProviderFallbacks(username, htmlResult);
 
     // Build partial immediately — profile (name/avatar/stats) visible to user right away
     const partial = (htmlResult && htmlResult.profile?.username) ? htmlResult : normalizeMetaOnly(username, session.html);
     partial.backgroundLoading = true;
-
-    // Fetch stories server-side — needs profile.id; fall back to web_profile_info when HTML gave null
-    if (!process.env.IG_WORKERS && sessionService.hasAnySessions()) {
-      const { normalizeStoryItems } = require('./instagramNormalizer');
-      const fireStories = (userId) => {
-        fetchStoriesServerSide(userId, username, session).then(storyItems => {
-          if (storyItems.length) {
-            partial.stories = { available: true, items: normalizeStoryItems(storyItems), message: undefined };
-            setCacheMerged(cacheKey, partial);
-          }
-        }).catch(() => {});
+    if (!partial.profile?.isPrivate && !partial.stories?.items?.length) {
+      partial.stories = {
+        ...(partial.stories || {}),
+        available: false,
+        items: [],
+        state: 'TEMPORARILY_UNAVAILABLE',
+        message: 'Stories could not be loaded right now. Please try again shortly.'
       };
-      if (partial.profile?.id) {
-        fireStories(partial.profile.id);
-      } else {
-        // HTML extraction returned no ID — fetch it from web_profile_info before stories can fire
-        tryWebProfileInfo(username, session).then(r => {
-          if (r && !r.blocked && r.profile?.id) {
-            partial.profile.id = r.profile.id;
-            console.log(`[fetcher] Resolved profile.id=${r.profile.id} via API for @${username}`);
-            fireStories(r.profile.id);
-          } else {
-            console.warn(`[fetcher] Could not resolve profile.id for @${username} — fast-path stories skipped`);
-          }
-        }).catch(() => {});
-      }
-    }
-
-    // Start browser fetch in background — needs the most lead time, kick it off first
-    if (process.env.ENABLE_BROWSER_FALLBACK === 'true') {
-      scheduleBrowserFetch(username, cacheKey);
     }
 
     // Sweep API endpoints in background — use a warmed session for proper auth
@@ -367,12 +313,12 @@ async function fetchAllPublic(username) {
       }).catch(() => {});
     }
 
-    return partial;
+    return attachProviderFallbacks(username, partial);
   }
 
   // No session at all — run browser directly (blocking)
-  const browserResult = await fetchViaBrowserFallback(username).catch(() => null);
-  if (browserResult) return browserResult;
+  const browserResult = await fetchViaBrowserFallback(username);
+  if (browserResult) return attachProviderFallbacks(username, browserResult);
 
   const err = new Error('Could not reach Instagram. Try again shortly.');
   err.status = 503; err.igStatus = 'BLOCKED_OR_RATE_LIMITED';

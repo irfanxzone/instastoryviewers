@@ -151,6 +151,9 @@ app.get('/', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   const status = err.status || 500;
+  if (err.retryAfterMs > 0) {
+    res.setHeader('Retry-After', String(Math.max(1, Math.ceil(err.retryAfterMs / 1000))));
+  }
   const responseStatus =
     status === 404 ? 'NOT_FOUND' :
     status === 429 ? 'BLOCKED_OR_RATE_LIMITED' :

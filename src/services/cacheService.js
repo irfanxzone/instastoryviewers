@@ -7,6 +7,8 @@ const { LRUCache } = require('lru-cache');
 // TTLs from env — env var names match .env.example
 const freshTtlMs = Number(process.env.CACHE_TTL_SECONDS || 900) * 1000;
 const staleTtlMs = Number(process.env.STALE_CACHE_TTL_SECONDS || 86400) * 1000;
+const emptyStoriesTtlMs = Number(process.env.EMPTY_STORIES_TTL_SECONDS || 120) * 1000;
+const storyLifetimeMs = 24 * 60 * 60 * 1000;
 
 // Vercel's filesystem is read-only — /tmp is the only writable directory
 const defaultCachePath = process.env.VERCEL
@@ -44,6 +46,29 @@ function saveDisk() {
   } catch {}
 }
 
+function sanitizeStories(data, stale) {
+  if (!data?.stories) return data;
+  const now = Date.now();
+  const original = data.stories.items || [];
+  const items = original.filter(item => {
+    const takenAt = Date.parse(item?.timestamp || '');
+    if (Number.isFinite(takenAt)) return takenAt + storyLifetimeMs > now;
+    // Unknown-age stories are safe only in the fresh cache window.
+    return !stale;
+  });
+  if (items.length === original.length) return data;
+  return {
+    ...data,
+    stories: {
+      ...data.stories,
+      available: items.length > 0,
+      items,
+      state: items.length ? data.stories.state : 'EMPTY',
+      message: items.length ? undefined : 'No active stories in the last 24 hours.'
+    }
+  };
+}
+
 /**
  * @param {string} key
  * @param {{ allowStale?: boolean }} opts
@@ -67,11 +92,15 @@ function getCache(key, { allowStale = true } = {}) {
   const d = item.data;
   if (d?.status === 'ERROR' || (d && !d.success)) return null;
 
-  if (ageMs <= freshTtlMs) {
-    return { hit: true, stale: false, ageMs, data: item.data };
+  const effectiveFreshTtl = item.data?.stories?.state === 'EMPTY'
+    ? Math.min(freshTtlMs, emptyStoriesTtlMs)
+    : freshTtlMs;
+
+  if (ageMs <= effectiveFreshTtl) {
+    return { hit: true, stale: false, ageMs, data: sanitizeStories(item.data, false) };
   }
   if (allowStale && ageMs <= staleTtlMs) {
-    return { hit: true, stale: true, ageMs, data: item.data };
+    return { hit: true, stale: true, ageMs, data: sanitizeStories(item.data, true) };
   }
   return null;
 }

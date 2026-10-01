@@ -195,8 +195,12 @@ async function warmupBrowser() {
     : null;
   try {
     const page = await openPage(warmWorker);
-    // Inject session on warmup so cookies are stored in the persistent profile
-    const sessionId = warmWorker?.sessionId || pickSession();
+    // Stories are handled by OpenHandle, so public profile/media fetching uses
+    // an anonymous browser. Keep session warmup only for legacy deployments.
+    const anonymousPublicMode = Boolean(process.env.OPENHANDLE_API_KEY);
+    const existing = await page.cookies('https://www.instagram.com/').catch(() => []);
+    if (existing.length) await page.deleteCookie(...existing).catch(() => {});
+    const sessionId = anonymousPublicMode ? '' : (warmWorker?.sessionId || pickSession());
     if (sessionId) {
       const dsUserId = sessionId.split(':')[0] || '';
       await page.setCookie(
@@ -227,23 +231,54 @@ function buildSyntheticUser(rawUser, accPosts, accReels, totalCount) {
 }
 
 // ─── In-page progressive script ───────────────────────────────────────────────
-// Runs inside real Chrome with Instagram's session cookies.
+// Runs inside real Chrome. In Stories-only provider mode it stays anonymous.
 // Calls window.igBatch() after EVERY paginated batch so Node.js can write
 // results to cache immediately — frontend gets more posts with each poll.
 const IN_PAGE_SCRIPT = async function(username) {
+  let fatal = null;
   const csrf = document.cookie.match(/csrftoken=([^;]+)/)?.[1] || '';
   const H = {
     'X-IG-App-ID':'936619743392459','X-ASBD-ID':'129477','X-Requested-With':'XMLHttpRequest',
     'X-CSRFToken':csrf,'X-Instagram-AJAX':'1','Accept':'application/json, text/plain, */*',
     'Accept-Language':'en-US,en;q=0.9','Referer':`https://www.instagram.com/${username}/`
   };
+  function retryAfterMs(value) {
+    if (!value) return 0;
+    const seconds = Number(value);
+    if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+    const date = Date.parse(value);
+    return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
+  }
+  async function GET_RESULT(url) {
+    if (fatal) return { ok: false, status: 0, data: null };
+    try {
+      const r = await fetch(url,{headers:H,credentials:'include'});
+      let data = null;
+      try { data = await r.json(); } catch {}
+      const responseMessage = String(data?.message || data?.error_type || data?.error || '');
+      if (r.status === 429 || /rate.?limit|please wait|too many requests/i.test(responseMessage)) {
+        fatal = { kind: 'rate_limited', retryAfterMs: retryAfterMs(r.headers.get('retry-after')) };
+        await window.igBatch({ type: 'upstream_status', ...fatal, status: 429 });
+      } else if (r.status === 401 || r.status === 403 || /login_required|checkpoint|challenge_required/i.test(responseMessage)) {
+        fatal = { kind: 'auth_failed' };
+        await window.igBatch({ type: 'upstream_status', ...fatal, status: r.status });
+      }
+      return { ok: r.ok, status: r.status, data };
+    } catch (error) {
+      fatal = { kind: 'transient_error', message: error?.message || 'network_error' };
+      await window.igBatch({ type: 'upstream_status', ...fatal, status: 0 });
+      return { ok: false, status: 0, data: null };
+    }
+  }
   async function GET(url) {
-    try { const r=await fetch(url,{headers:H,credentials:'include'}); return r.ok?r.json():null; }
-    catch { return null; }
+    const result = await GET_RESULT(url);
+    return result.ok ? result.data : null;
   }
 
   // ── Profile ───────────────────────────────────────────────────────────────
-  const init = await GET(`/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`);
+  const initResult = await GET_RESULT(`/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`);
+  if (fatal) return { ok: false, ...fatal };
+  const init = initResult.data;
   let user = init?.data?.user || init?.data?.xdt_api__v1__users__web_profile_info?.user || init?.user;
 
   // Fallback: extract userId from page DOM if web_profile_info is rate-limited (returns null)
@@ -265,7 +300,8 @@ const IN_PAGE_SCRIPT = async function(username) {
     const url   = window.location.href;
     const isLogin = document.body?.innerText?.toLowerCase().includes('log in') && document.body?.innerText?.length < 5000;
     console.log(`[ig-init] FAIL | url=${url} | title=${title.slice(0,60)} | bodyLen=${document.body?.innerText?.length} | looksLikeLogin=${isLogin}`);
-    return { ok: false };
+    await window.igBatch({ type: 'upstream_status', kind: 'malformed_response', status: initResult.status });
+    return { ok: false, kind: 'malformed_response' };
   }
   const uid        = user.id || user.pk;
   const totalPosts = user.edge_owner_to_timeline_media?.count || 0;
@@ -273,34 +309,6 @@ const IN_PAGE_SCRIPT = async function(username) {
 
   // Report the initial user profile immediately
   await window.igBatch({ type: 'init', user, totalCount: totalPosts, moreAvail: totalPosts > 0 });
-
-  // ── Stories — fetch FIRST (before the long post loop) ─────────────────────
-  try {
-    const storyEndpoints = [
-      `/api/v1/feed/reels_media/?reel_ids=${uid}`,
-      `/api/v1/feed/user_story/?user_id=${uid}`,
-      `/api/v1/user/${uid}/story/`
-    ];
-    for (const ep of storyEndpoints) {
-      let status = 0, d = null;
-      try {
-        const r = await fetch(ep, { headers: H, credentials: 'include' });
-        status = r.status;
-        d = await r.json().catch(() => null);
-      } catch (e) {
-        console.log(`[ig-story] ${ep.split('?')[0]} threw: ${e.message}`);
-        continue;
-      }
-      const items = status < 400
-        ? (d?.reels_media?.[0]?.items || d?.reels?.[String(uid)]?.items || d?.story?.items || d?.items || [])
-        : [];
-      console.log(`[ig-story] ${ep.split('?')[0]} → ${status}, items=${items.length}, body=${JSON.stringify(d).slice(0, 250)}`);
-      if (items.length) {
-        await window.igBatch({ type: 'stories', items, moreAvail: false });
-        break;
-      }
-    }
-  } catch (e) { console.log(`[ig-story] outer error: ${e.message}`); }
 
   // ── Posts — ALL pages ─────────────────────────────────────────────────────
   // Strategy:
@@ -333,6 +341,7 @@ const IN_PAGE_SCRIPT = async function(username) {
       ? `/api/v1/feed/user/${uid}/?count=12&max_id=${encodeURIComponent(nextMaxId)}`
       : `/api/v1/feed/user/${uid}/?count=12`;
     const feed = await GET(url);
+    if (fatal) return { ok: false, ...fatal };
     if (!feed?.items?.length) break;   // API says no more → stop
 
     // Skip duplicates that were already in the embedded batch
@@ -366,6 +375,7 @@ const IN_PAGE_SCRIPT = async function(username) {
       ? `/api/v1/clips/user/?user_id=${uid}&max_id=${encodeURIComponent(reelMaxId)}&count=12`
       : `/api/v1/clips/user/?user_id=${uid}&count=12`;
     const feed = await GET(reelUrl);
+    if (fatal) return { ok: false, ...fatal };
     if (!feed?.items?.length) break;
     const items = feed.items.map(i => i.media || i).slice(0, Math.max(0, 120 - loadedReelCount));
     await window.igBatch({ type: 'reels', items, moreAvail: !!feed.paging_info?.more_available });
@@ -390,7 +400,7 @@ const IN_PAGE_SCRIPT = async function(username) {
   } catch {}
 
   await window.igBatch({ type: 'done', moreAvail: false, totalCount: totalPosts });
-  return { ok: true };
+  return fatal ? { ok: false, ...fatal } : { ok: true };
 };
 
 // Safely decode URL-encoded session IDs (Instagram stores them URL-encoded)
@@ -434,7 +444,7 @@ async function fetchViaBrowserFallbackAttempt(username, cacheKey = null, triedWo
     console.warn('[browser] Could not open page:', err.message);
     igWorkerService.markWorkerFailed(worker, `openPage:${err.message}`);
     igWorkerService.releaseWorker(worker);
-    return null;
+    return { _fetchOutcome: 'transient_error', error: err.message };
   }
 
   // Surface console.log calls from the in-page script (story diagnostics tagged [ig-story])
@@ -449,6 +459,7 @@ async function fetchViaBrowserFallbackAttempt(username, cacheKey = null, triedWo
   let   rawUser     = null;
   let   totalCount  = 0;
   let   jobDone     = false;   // only true after explicit 'done' signal
+  let   attemptOutcome = null;
 
   try {
     // igBatch is called from browser JS after each pagination batch
@@ -472,6 +483,11 @@ async function fetchViaBrowserFallbackAttempt(username, cacheKey = null, triedWo
         }
         else if (type === 'stories' && items.length && rawUser) {
           rawUser._stories = items;
+          rawUser._storiesCheckedAt = new Date().toISOString();
+        }
+        else if (type === 'stories_empty' && rawUser) {
+          rawUser._stories = [];
+          rawUser._storiesCheckedAt = new Date().toISOString();
         }
         else if (type === 'highlights' && items.length && rawUser) {
           rawUser._highlights = items;
@@ -479,11 +495,27 @@ async function fetchViaBrowserFallbackAttempt(username, cacheKey = null, triedWo
         else if (type === 'done') {
           jobDone = true;
         }
+        else if (type === 'upstream_status') {
+          attemptOutcome = {
+            kind: payload.kind || 'malformed_response',
+            status: payload.status || 0,
+            retryAfterMs: Number(payload.retryAfterMs || 0),
+            message: payload.message || ''
+          };
+        }
 
         // Write to cache after every batch so the frontend can poll for progress
-        if (rawUser && cacheKey) {
+        if (rawUser && cacheKey && type !== 'upstream_status') {
           const synthetic = buildSyntheticUser(rawUser, accPosts, accReels, totalCount);
           const result    = normalizeProfileUser(synthetic, 'instagram_browser_fallback');
+          if (rawUser._storiesCheckedAt && !result.stories?.items?.length) {
+            result.stories = {
+              ...result.stories,
+              state: 'EMPTY',
+              checkedAt: rawUser._storiesCheckedAt,
+              message: 'No active stories in the last 24 hours.'
+            };
+          }
           // Stay in backgroundLoading until the explicit 'done' signal
           // (moreAvail alone is unreliable since totalPosts may be 0 with auth sessions)
           if (!jobDone) {
@@ -502,13 +534,14 @@ async function fetchViaBrowserFallbackAttempt(username, cacheKey = null, triedWo
       } catch (e) { console.warn('[browser] igBatch error:', e.message); }
     });
 
-    // Inject session cookie from pool — unlocks stories, highlights and richer data.
-    // Rotates through the 8-session pool so no single account gets hammered.
-    const sessionId = worker?.sessionId || pickSession();
+    // Public profile/posts/reels work better anonymously. When OpenHandle owns
+    // Stories, clear old persistent session cookies and do not inject a login.
+    const anonymousPublicMode = Boolean(process.env.OPENHANDLE_API_KEY);
+    const existing = await page.cookies('https://www.instagram.com/').catch(() => []);
+    if (existing.length) await page.deleteCookie(...existing).catch(() => {});
+    const sessionId = anonymousPublicMode ? '' : (worker?.sessionId || pickSession());
     const dsUserId = worker?.dsUserId || sessionId?.split(':')[0] || '';
     if (sessionId) {
-      const existing = await page.cookies('https://www.instagram.com/').catch(() => []);
-      if (existing.length) await page.deleteCookie(...existing).catch(() => {});
       const cookies = [
         { name: 'sessionid',  value: sessionId, domain: '.instagram.com', path: '/', httpOnly: true,  secure: true },
         { name: 'ds_user_id', value: dsUserId,  domain: '.instagram.com', path: '/', httpOnly: false, secure: true }
@@ -516,6 +549,8 @@ async function fetchViaBrowserFallbackAttempt(username, cacheKey = null, triedWo
       await page.setCookie(...cookies);
       if (worker) console.log(`[browser] Worker ${worker.id} owns @${username} for this fetch`);
       console.log(`[browser] Session injected for @${username} (…${sessionId.slice(-8)})`);
+    } else if (anonymousPublicMode) {
+      console.log(`[browser] Anonymous public mode for @${username}`);
     }
 
     console.log(`[browser] Fetching @${username}…`);
@@ -525,6 +560,15 @@ async function fetchViaBrowserFallbackAttempt(username, cacheKey = null, triedWo
 
     // Detect scraping challenge and auto-dismiss it
     const finalUrl = page.url();
+    if (navigation?.status() === 429) {
+      const retryAfter = navigation.headers()?.['retry-after'];
+      const seconds = Number(retryAfter);
+      const retryAfterMs = Number.isFinite(seconds)
+        ? Math.max(0, seconds * 1000)
+        : Math.max(0, (Date.parse(retryAfter || '') || 0) - Date.now());
+      const cooldownMs = igWorkerService.markWorkerRateLimited(worker, retryAfterMs);
+      return { _fetchOutcome: 'rate_limited', retryAfterMs: cooldownMs };
+    }
     if (navigation?.status() === 407 || finalUrl.startsWith('chrome-error://')) {
       throw new Error(`proxy_navigation_failed:${navigation?.status() || 'chrome-error'}`);
     }
@@ -554,14 +598,39 @@ async function fetchViaBrowserFallbackAttempt(username, cacheKey = null, triedWo
     await new Promise(r => setTimeout(r, 3000));
 
     // Run the full in-page script: profile + ALL posts + ALL reels + stories + highlights
-    await page.evaluate(IN_PAGE_SCRIPT, username).catch(err => {
+    const pageOutcome = await page.evaluate(IN_PAGE_SCRIPT, username).catch(err => {
       console.warn('[browser] Script error:', err.message);
+      return { ok: false, kind: 'transient_error', message: err.message };
     });
+
+    const outcome = attemptOutcome || (pageOutcome?.ok === false ? pageOutcome : null);
+    if (outcome?.kind === 'rate_limited') {
+      const cooldownMs = igWorkerService.markWorkerRateLimited(worker, outcome.retryAfterMs);
+      return { _fetchOutcome: 'rate_limited', retryAfterMs: cooldownMs };
+    }
+    if (outcome?.kind === 'auth_failed') {
+      if (!anonymousPublicMode) {
+        igWorkerService.markWorkerAuthFailed(worker);
+        return { _fetchOutcome: 'auth_failed' };
+      }
+      return { _fetchOutcome: 'transient_error', error: 'anonymous_public_access_rejected' };
+    }
+    if (outcome?.kind) {
+      return { _fetchOutcome: outcome.kind, error: outcome.message || outcome.kind };
+    }
 
     // Build final result from accumulated data
     if (rawUser) {
       const synthetic = buildSyntheticUser(rawUser, accPosts, accReels, totalCount);
       const result    = normalizeProfileUser(synthetic, 'instagram_browser_fallback');
+      if (rawUser._storiesCheckedAt && !result.stories?.items?.length) {
+        result.stories = {
+          ...result.stories,
+          state: 'EMPTY',
+          checkedAt: rawUser._storiesCheckedAt,
+          message: 'No active stories in the last 24 hours.'
+        };
+      }
       console.log(`[browser] @${username} done: ${accPosts.length} posts, ${accReels.length} reels, ${rawUser._stories?.length||0} stories`);
       return result;
     }
@@ -571,8 +640,12 @@ async function fetchViaBrowserFallbackAttempt(username, cacheKey = null, triedWo
 
   } catch (err) {
     console.warn(`[browser] Error @${username}: ${err.message}`);
+    if (!process.env.OPENHANDLE_API_KEY && /bad_session_redirect|login|checkpoint|challenge/i.test(err.message)) {
+      igWorkerService.markWorkerAuthFailed(worker, err.message);
+      return { _fetchOutcome: 'auth_failed', error: err.message };
+    }
     igWorkerService.markWorkerFailed(worker, err.message);
-    return null;
+    return { _fetchOutcome: 'transient_error', error: err.message };
   } finally {
     await page.close().catch(() => {});  // keep browser alive, close only the tab
     igWorkerService.releaseWorker(worker);
@@ -580,40 +653,47 @@ async function fetchViaBrowserFallbackAttempt(username, cacheKey = null, triedWo
 }
 
 async function fetchViaBrowserFallback(username, cacheKey = null) {
+  const globalCooldown = igWorkerService.getGlobalCooldown();
+  if (globalCooldown.active) {
+    const err = new Error('Instagram ist voruebergehend nicht verfuegbar. Bitte versuche es spaeter erneut.');
+    err.status = 503;
+    err.igStatus = 'TEMPORARILY_UNAVAILABLE';
+    err.retryAfterMs = globalCooldown.remainingMs;
+    throw err;
+  }
   const maxAttempts = igWorkerService.hasWorkers()
-    ? Number(process.env.IG_WORKER_FETCH_ATTEMPTS || 3)
+    ? Math.min(2, Math.max(1, Number(process.env.IG_WORKER_FETCH_ATTEMPTS || 2)))
     : 1;
   const triedWorkerIds = new Set();
-  let bestZeroStoryResult = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const result = await fetchViaBrowserFallbackAttempt(username, cacheKey, triedWorkerIds);
-    if (result) {
-      const storyCount = result.stories?.items?.length || 0;
-      const mediaCount = (result.posts?.items?.length || 0) + (result.reels?.items?.length || 0);
-      const hasProfile = !!result.profile?.username;
-
-      if (storyCount > 0 || !igWorkerService.hasWorkers()) return result;
-
-      // Instagram sometimes returns 200 OK with an empty stories payload for one
-      // session, while another healthy session can see the stories. Treat zero
-      // stories as inconclusive when the profile/media loaded successfully.
-      if (hasProfile || mediaCount > 0) {
-        bestZeroStoryResult ||= result;
-        if (attempt < maxAttempts) {
-          console.warn(`[browser] @${username} returned 0 stories; trying another worker (${attempt + 1}/${maxAttempts})`);
-          continue;
-        }
-      }
-
+    if (result?._fetchOutcome === 'rate_limited') {
+      const err = new Error('Instagram ist voruebergehend nicht verfuegbar. Bitte versuche es spaeter erneut.');
+      err.status = 503;
+      err.igStatus = 'TEMPORARILY_UNAVAILABLE';
+      err.retryAfterMs = result.retryAfterMs;
+      throw err;
+    }
+    if (result?._fetchOutcome === 'malformed_response') {
+      const err = new Error('Instagram hat keine verwertbare Antwort geliefert. Bitte versuche es spaeter erneut.');
+      err.status = 503;
+      err.igStatus = 'TEMPORARILY_UNAVAILABLE';
+      throw err;
+    }
+    if (result && !result._fetchOutcome) {
+      // A valid empty stories response is authoritative for the short cache
+      // window. Never burn another worker only because there are zero stories.
       return result;
     }
+    const retryable = ['transient_error', 'auth_failed'].includes(result?._fetchOutcome);
+    if (!retryable || attempt >= maxAttempts) break;
     if (attempt < maxAttempts) {
-      console.warn(`[browser] Retrying @${username} with another worker (${attempt + 1}/${maxAttempts})`);
+      console.warn(`[browser] One bounded retry for @${username} after ${result._fetchOutcome} (${attempt + 1}/${maxAttempts})`);
     }
   }
 
-  return bestZeroStoryResult;
+  return null;
 }
 
 module.exports = { fetchViaBrowserFallback, warmupBrowser };
