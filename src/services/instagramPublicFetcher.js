@@ -8,7 +8,11 @@ const { isLoginWallText, isBlockedResponse, NotFoundError } = require('../utils/
 const proxyService = require('./proxyService');
 const { setCache, setCacheMerged } = require('./cacheService');
 const sessionService = require('./sessionService');
-const { fetchStoriesViaOpenHandle, fetchMediaViaOpenHandle } = require('./openHandleService');
+const {
+  fetchProfileViaOpenHandle,
+  fetchStoriesViaOpenHandle,
+  fetchMediaViaOpenHandle
+} = require('./openHandleService');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 function getQueryHashes() {
@@ -55,6 +59,19 @@ async function attachOpenHandleStories(username, result) {
 }
 
 async function attachProviderFallbacks(username, result) {
+  if (result?.success && !result.profile?.id) {
+    try {
+      result.profile = {
+        ...(result.profile || {}),
+        ...(await fetchProfileViaOpenHandle(username))
+      };
+      result.status = result.profile.isPrivate ? 'PRIVATE_ACCOUNT' : 'PUBLIC_ACCOUNT';
+      result.source = `${result.source || 'instagram_public'}+openhandle_profile`;
+    } catch (error) {
+      console.warn(`[openhandle:profile] Failed @${username}: HTTP ${error.status || 'network'}`);
+    }
+  }
+
   result = await attachOpenHandleStories(username, result);
   if (!result?.success || result.profile?.isPrivate) return result;
 
@@ -267,7 +284,7 @@ function extractUserFromHtml(html, username) {
 
 // ─── Main entry point ─────────────────────────────────────────────────────────
 async function fetchAllPublic(username) {
-  const cacheKey = `all:hybrid-v2:${username.toLowerCase()}`;
+  const cacheKey = `all:hybrid-v3:${username.toLowerCase()}`;
   let session = null;
 
   try {

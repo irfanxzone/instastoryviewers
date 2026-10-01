@@ -11,7 +11,7 @@ const activeLoads = new Map();
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function cacheKey(username) {
-  return `all:hybrid-v2:${username.toLowerCase()}`;
+  return `all:hybrid-v3:${username.toLowerCase()}`;
 }
 
 function metaBlock(cached) {
