@@ -115,6 +115,14 @@ cleanPages.forEach(p => {
 });
 
 // Blog posts clean URLs
+app.get('/instagram-community-aufbauen', (req, res) => {
+  res.sendFile(path.join(publicDir, 'blog', 'instagram-community-aufbauen.html'));
+});
+
+app.get('/blog/instagram-community-aufbauen', (req, res) => {
+  res.redirect(301, '/instagram-community-aufbauen');
+});
+
 app.get('/instagram-stories-anonym-ansehen-legal', (req, res) => {
   res.sendFile(path.join(publicDir, 'blog', 'instagram-stories-anonym-ansehen-legal.html'));
 });
