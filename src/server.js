@@ -104,9 +104,42 @@ app.get('/api/health', (req, res) => {
 
 // ─── Static Frontend ──────────────────────────────────────────────────────────
 const publicDir = path.join(__dirname, '..', 'public');
+app.use((req, res, next) => {
+  if (req.method === 'GET' && !req.path.startsWith('/api/') && req.accepts('html')) {
+    res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=86400');
+    res.setHeader('Cloudflare-CDN-Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+  }
+  next();
+});
 // favicon.ico fallback — browsers and crawlers that don't support SVG icons
 app.get('/favicon.ico', (req, res) => res.sendFile(path.join(publicDir, 'favicon-32.png')));
-app.use(express.static(publicDir, { maxAge: '1h', etag: true }));
+app.use(express.static(publicDir, {
+  etag: true,
+  redirect: false,
+  maxAge: 0,
+  setHeaders(res, filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    const isVersioned = /[?&]v=/.test(res.req.originalUrl || '');
+
+    if (ext === '.html' || ext === '.xml') {
+      res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=86400');
+      res.setHeader('Cloudflare-CDN-Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+      return;
+    }
+
+    if (isVersioned && (ext === '.css' || ext === '.js')) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      return;
+    }
+
+    if (['.webp', '.png', '.jpg', '.jpeg', '.svg', '.ico', '.woff2'].includes(ext)) {
+      res.setHeader('Cache-Control', 'public, max-age=2592000, immutable');
+      return;
+    }
+
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+  }
+}));
 
 // ─── Clean URLs (no .html extension) ─────────────────────────────────────────
 const cleanPages = ['blog','about','contact','privacy','disclaimer','terms','dmca'];
