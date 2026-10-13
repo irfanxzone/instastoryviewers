@@ -148,6 +148,14 @@ cleanPages.forEach(p => {
 });
 
 // Blog posts clean URLs
+app.get('/beste-instagram-story-viewer', (req, res) => {
+  res.sendFile(path.join(publicDir, 'blog', 'beste-instagram-story-viewer.html'));
+});
+
+app.get('/blog/beste-instagram-story-viewer', (req, res) => {
+  res.redirect(301, '/beste-instagram-story-viewer');
+});
+
 app.get('/instagram-community-aufbauen', (req, res) => {
   res.sendFile(path.join(publicDir, 'blog', 'instagram-community-aufbauen.html'));
 });
