@@ -148,6 +148,14 @@ cleanPages.forEach(p => {
 });
 
 // Blog posts clean URLs
+app.get('/personal-branding-instagram', (req, res) => {
+  res.sendFile(path.join(publicDir, 'blog', 'personal-branding-instagram.html'));
+});
+
+app.get('/blog/personal-branding-instagram', (req, res) => {
+  res.redirect(301, '/personal-branding-instagram');
+});
+
 app.get('/beste-instagram-story-viewer', (req, res) => {
   res.sendFile(path.join(publicDir, 'blog', 'beste-instagram-story-viewer.html'));
 });
