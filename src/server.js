@@ -148,6 +148,14 @@ cleanPages.forEach(p => {
 });
 
 // Blog posts clean URLs
+app.get('/instagram-highlights-erstellen-organisieren', (req, res) => {
+  res.sendFile(path.join(publicDir, 'blog', 'instagram-highlights-erstellen-organisieren.html'));
+});
+
+app.get('/blog/instagram-highlights-erstellen-organisieren', (req, res) => {
+  res.redirect(301, '/instagram-highlights-erstellen-organisieren');
+});
+
 app.get('/personal-branding-instagram', (req, res) => {
   res.sendFile(path.join(publicDir, 'blog', 'personal-branding-instagram.html'));
 });
